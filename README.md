@@ -84,10 +84,13 @@ Example: `git checkout -b miniproject-cobb-angle`.
 
 ---
 
-## Step 4 — Add your project folder
+## Step 4 — Add your code to your project folder
 
-Create a folder for your project **inside `projects/`** and put your code there.
-Name the folder clearly (lowercase, hyphens, no spaces):
+**Your project folder already exists under [`projects/`](projects/)** — find the
+one matching your miniproject and drop your code into it. Each folder has a
+`README.md` describing the project and how the dataset helps; fill in the blanks
+at the bottom. (If your project isn't listed, create a new folder — lowercase,
+hyphens, no spaces.)
 
 ```
 projects/
