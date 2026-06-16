@@ -7,9 +7,9 @@ Estimate bone mineral density by sampling trabecular Hounsfield Units (HU)
 inside vertebral bodies (opportunistic CT screening).
 
 ## How CTSpinoPelvic1K v3 helps
-More labelled vertebral bodies to sample from — v3 adds the **thoracic column
-(T1–T13)** on top of the lumbar bodies, so you can build a full BMD-by-level
-profile. Critically, v3 also ships **both femurs as GT**, opening the
+More labelled vertebral bodies to sample from — v3 adds the **FOV-visible thoracic
+column** (typically from ~T8 down) on top of the lumbar bodies, so you can build a
+BMD-by-level profile across more levels. Critically, v3 also ships **both femurs as GT**, opening the
 **proximal femur / femoral neck** — the same skeletal site DXA uses for hip BMD —
 as a second, clinically standard measurement region.
 
