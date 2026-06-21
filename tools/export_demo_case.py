@@ -77,11 +77,22 @@ def _project(p, origin, lr):
     return p - ((p - origin) @ lr) * lr
 
 
-def _angle_entry(name, label, value, vertex, tip1, tip2, color):
-    return {"id": name, "label": label, "value": None if value is None else round(float(value), 1),
-            "units": "°", "vertex": [round(float(x), 2) for x in vertex],
-            "tip1": [round(float(x), 2) for x in tip1],
-            "tip2": [round(float(x), 2) for x in tip2], "color": color}
+def _p(v):
+    return [round(float(x), 2) for x in v]
+
+
+def _seg(p, q):
+    return [_p(p), _p(q)]
+
+
+def _angle_entry(name, label, value, color, segments, arc, label_at):
+    """segments: list of [p,q] mm line pairs to draw (animated). arc: {center,a,b}
+    in mm defining the angle wedge. label_at: mm point for the value text."""
+    return {"id": name, "label": label,
+            "value": None if value is None else round(float(value), 1), "units": "°",
+            "color": color, "segments": segments,
+            "arc": {"center": _p(arc[0]), "a": _p(arc[1]), "b": _p(arc[2])},
+            "label_at": _p(label_at)}
 
 
 def build_geometry(label, affine):
@@ -102,15 +113,12 @@ def build_geometry(label, affine):
     horiz = g.unit(np.cross(lr, sup_s))                    # horizontal in plane
 
     angles, points = [], []
+    M = _project(0.5 * (cL + cR), origin, lr) if fem is not None else None
     if fem is not None:
-        M = _project(0.5 * (cL + cR), origin, lr)
-        points += [{"id": "femhead_left", "pos": [round(float(x), 2) for x in cL]},
-                   {"id": "femhead_right", "pos": [round(float(x), 2) for x in cR]},
-                   {"id": "bicoxofemoral", "pos": [round(float(x), 2) for x in M]}]
+        points += [{"id": "bicoxofemoral", "pos": _p(M)}]
 
     if s1 is not None and fem is not None:
         P = _project(s1[0], origin, lr)
-        M = _project(0.5 * (cL + cR), origin, lr)
         n_s = g.unit(g.project_out(s1[1], lr))
         if n_s @ sup_s < 0:
             n_s = -n_s
@@ -119,12 +127,22 @@ def build_geometry(label, affine):
         PI = g.angle_between(n_s, radius)
         SS = g.angle_between(e_dir, horiz)
         PT = g.angle_between(radius, sup_s)
-        angles.append(_angle_entry("PI", "Pelvic Incidence", PI, P,
-                                   P + RAY * n_s, M, "#36d399"))
-        angles.append(_angle_entry("SS", "Sacral Slope", SS, P,
-                                   P + 0.6 * RAY * e_dir, P + 0.6 * RAY * horiz, "#60a5fa"))
-        angles.append(_angle_entry("PT", "Pelvic Tilt", PT, M,
-                                   P, M + RAY * sup_s, "#fbbf24"))
+        HW = 28.0
+        # PI: pelvic radius (P->M) vs S1-endplate perpendicular (P->n_s); wedge at P
+        angles.append(_angle_entry(
+            "PI", "Pelvic Incidence", PI, "#36d399",
+            [_seg(P, M), _seg(P, P + RAY * n_s), _seg(P - HW * e_dir, P + HW * e_dir)],
+            (P, M, P + RAY * n_s), P + 0.5 * (g.unit(M - P) + n_s) * 40))
+        # SS: S1 endplate line vs horizontal, wedge at P
+        angles.append(_angle_entry(
+            "SS", "Sacral Slope", SS, "#60a5fa",
+            [_seg(P - HW * e_dir, P + HW * e_dir), _seg(P, P + 0.8 * RAY * horiz)],
+            (P, P + e_dir, P + horiz), P + 30 * horiz + 14 * sup_s))
+        # PT: vertical vs hip-axis->S1 line, wedge at M
+        angles.append(_angle_entry(
+            "PT", "Pelvic Tilt", PT, "#fbbf24",
+            [_seg(M, P), _seg(M, M + RAY * sup_s)],
+            (M, P, M + sup_s), M + 0.5 * (g.unit(P - M) + sup_s) * 45))
 
     if s1 is not None and l1 is not None:
         P1, n1, _ = l1
@@ -136,14 +154,19 @@ def build_geometry(label, affine):
         e1 = g.unit(np.cross(lr, n1s))
         e7 = g.unit(np.cross(lr, n7s))
         LL = g.cobb_angle(n1, n7, lr)
-        # show the two endplate lines; vertex at their midpoint for the label
-        vtx = 0.5 * (P1 + P7)
-        angles.append(_angle_entry("LL", "Lumbar Lordosis", LL, vtx,
-                                   P1 + 0.5 * RAY * e1, P7 + 0.5 * RAY * e7, "#f472b6"))
+        HW = 34.0
+        # Cobb: the L1 and S1 superior-endplate lines + perpendiculars; wedge
+        # between the two perpendiculars (== angle between endplates == LL), drawn
+        # at the midpoint between the endplates so it sits on the spine.
+        mid = 0.5 * (P1 + P7)
+        angles.append(_angle_entry(
+            "LL", "Lumbar Lordosis", LL, "#f472b6",
+            [_seg(P1 - HW * e1, P1 + HW * e1), _seg(P7 - HW * e7, P7 + HW * e7),
+             _seg(mid, mid + 0.5 * RAY * n1s), _seg(mid, mid + 0.5 * RAY * n7s)],
+            (mid, mid + n1s, mid + n7s), mid + 0.5 * (n1s + n7s) * 46))
 
     return {"sagittal_normal": [round(float(x), 4) for x in lr],
-            "plane_origin": [round(float(x), 2) for x in origin],
-            "angles": angles, "points": points}
+            "plane_origin": _p(origin), "angles": angles, "points": points}
 
 
 # --------------------------------------------------------------------------- #
