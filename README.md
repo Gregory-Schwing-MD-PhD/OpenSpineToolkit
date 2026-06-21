@@ -25,6 +25,30 @@ project.
 
 ---
 
+## Programming requirements (read before you code)
+
+Your project reads **CTSpinoPelvic1K v3** segmentation masks and computes a
+measurement. Before writing code, read **[`SPEC.md`](SPEC.md)** — the authoritative
+technical contract. It defines:
+
+- **The data:** label-id scheme, PIR orientation, supine-CT and FOV caveats, and
+  the rule that all geometry is in **world millimetres via the NIfTI affine**.
+- **Baseline dependencies:** Python ≥ 3.10 + `nibabel`, `numpy`, `scipy`,
+  `scikit-image` (pin your own `requirements.txt`).
+- **Shared geometry primitives:** mask extraction, plane/sphere fitting, the
+  data-derived patient sagittal plane — reuse these; it's where fidelity is won.
+- **The output contract:** one JSON record per case + standard `qc_flags`, so
+  every miniproject's results are comparable and QC-able.
+- **The build order by clinical utility** (start with **Pelvic Incidence**), with
+  pre-/post-requirement outlines per parameter and which ones are out of scope
+  (e.g. SVA/TPA need C7/T1 — not in this FOV).
+
+> Golden rule: **PI is valid on supine CT** (it's posture-invariant); LL/SS/PT and
+> the rest are **supine surrogates** — compute them, but flag them. Don't fake
+> standing-only parameters (SVA, TPA).
+
+---
+
 ## Step 0 — Create a GitHub account & install Git
 
 1. **Create a GitHub account:** go to <https://github.com> → **Sign up**.
