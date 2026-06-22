@@ -111,10 +111,19 @@ def signed_angle_in_plane(v1, v2, plane_normal, degrees: bool = True) -> float:
 
 
 def cobb_angle(normal_a, normal_b, view_normal) -> float:
-    """Cobb angle (deg, unsigned) between two endplate planes *as seen in* the
-    viewing plane (normal `view_normal`): project both endplate normals into that
-    plane and take the angle between them — identical to drawing perpendiculars to
-    each endplate and measuring their intersection. Sagittal view (`view_normal` =
-    L–R axis) gives lordosis/kyphosis; coronal view (A–P axis) gives scoliosis."""
-    return angle_between(project_out(normal_a, view_normal),
-                         project_out(normal_b, view_normal))
+    """Cobb angle (deg) between two endplate PLANES as seen in the viewing plane
+    (normal `view_normal`): project both endplate normals into that plane and take
+    the angle between the planes — identical to drawing perpendiculars to each
+    endplate and measuring their intersection. Sagittal view (`view_normal` = L–R
+    axis) gives lordosis/kyphosis; coronal view (A–P axis) gives scoliosis.
+
+    Orientation-INDEPENDENT: it uses |cos| so the result is the acute dihedral
+    (0–90°) regardless of how each normal is oriented. This matters because
+    `ostk.spine.fit_endplate` returns OUTWARD normals (superior→cranial,
+    inferior→caudal); comparing a superior/inferior pair (e.g. vertebral wedging)
+    with the raw directed angle would give the supplement. Both endplates of a
+    realistic spinal angle are <90° apart, so the acute value is the true tilt."""
+    a = unit(project_out(normal_a, view_normal))
+    b = unit(project_out(normal_b, view_normal))
+    cos = abs(float(np.clip(a @ b, -1.0, 1.0)))
+    return float(np.degrees(np.arccos(cos)))

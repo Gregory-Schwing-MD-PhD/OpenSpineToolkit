@@ -1,8 +1,9 @@
 """ostk.labels — the CTSpinoPelvic1K label-id scheme (mirrors the dataset).
 
-v3 ids 0–50; v4 adds ribs (26–49, reserved in v3), iliolumbar (51/52),
-LS-nerve roots (53–58), and relocates ignore 50 -> 255. Use the names so
-measurement code never hard-codes magic numbers.
+v3 populates 0–49 (cores + femurs + GT thoracic + TS ribs) with ignore 50, and
+RESERVES the v4 soft-tissue block: iliolumbar (51/52), LS-nerve roots (53–58),
+psoas (59/60). v4 populates that block and relocates ignore 50 -> 255. Use the
+names so measurement code never hard-codes magic numbers.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ LABELS = {
     "nerve_L4_left": 53, "nerve_L4_right": 54,
     "nerve_L5_left": 55, "nerve_L5_right": 56,
     "nerve_S1_left": 57, "nerve_S1_right": 58,
+    "psoas_left": 59, "psoas_right": 60,                 # v4 (XLIF corridor)
 }
 ID_TO_NAME = {v: k for k, v in LABELS.items()}
 
