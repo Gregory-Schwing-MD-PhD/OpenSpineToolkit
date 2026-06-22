@@ -79,6 +79,18 @@ def _s1_endplate_surface(label, affine):
     return None if res is None else np.asarray(res[2], float)
 
 
+def _endplate_corners(label, affine, level):
+    """(anterior_corner, posterior_corner) world mm of a superior endplate, so the
+    drawn endplate line covers the actual endplate. Returns None if unavailable."""
+    src = level
+    if level == "S1" and not binary_mask(label, lid("S1")).any():
+        src = "sacrum"
+    pts = mask_world(largest_component(binary_mask(label, lid(src))), affine)
+    res = spine.endplate_corners(pts, which="superior",
+                                 **spine.corner_params_for_level(level))
+    return None if res is None else (np.asarray(res[0], float), np.asarray(res[1], float))
+
+
 def _project(p, origin, lr):
     p = np.asarray(p, float)
     return p - ((p - origin) @ lr) * lr
@@ -100,7 +112,8 @@ def _intersect(p0, d0, p1, d1):
     return np.asarray(p0, float) + ts[0] * np.asarray(d0, float)
 
 
-def _angle_entry(name, label, value, color, solid, dashed, arc, label_at, rule=None):
+def _angle_entry(name, label, value, color, solid, dashed, arc, label_at, rule=None,
+                 arc_r_px=None):
     """solid: [p,q] mm pairs drawn SOLID (the anatomical endplate line). dashed:
     [p,q] pairs drawn DOTTED (reference/construction lines — HRL, VRL, perpendicular,
     pelvic radius). arc: {center,a,b} mm angle wedge. label_at: mm point for the text.
@@ -113,6 +126,8 @@ def _angle_entry(name, label, value, color, solid, dashed, arc, label_at, rule=N
          "label_at": _p(label_at)}
     if rule is not None:
         d["rule"] = rule
+    if arc_r_px is not None:
+        d["arc_r_px"] = arc_r_px
     return d
 
 
@@ -199,11 +214,16 @@ def build_geometry(label, affine):
         points += [{"id": "s1_midpoint", "pos": _p(P)}]    # the "1/2 1/2" anchor
         # SS: S1 endplate vs HRL — the HRL ORIGINATES at the midpoint and projects
         # posterior; label written along the HRL.
+        # dotted continuation of the endplate posteriorly + the HRL, with the SS arc
+        # drawn out at the end region (Legaye fig.): angle between the continued
+        # endplate and the horizontal.
         angles.append(_angle_entry(
             "SS", "Sacral Slope", SS, "#60a5fa",
-            [s1line], [_seg(P, P + HRLL * horiz_post)],
+            [s1line],
+            [_seg(P + half * e_post, P + (half + 55.0) * e_post),
+             _seg(P, P + HRLL * horiz_post)],
             (P, P + 44 * e_post, P + 44 * horiz_post),
-            P + 50 * horiz_post + 11 * sup_s, rule=ss_rule))
+            P + 64 * horiz_post + 14 * sup_s, rule=ss_rule, arc_r_px=52))
         # PI: S1-endplate perpendicular (into the pelvis) vs the pelvic radius to the
         # femoral-head axis; wedge at the S1 midpoint. Label sits slightly POSTERIOR
         # (dynamic) so it doesn't collide with PT.
@@ -233,21 +253,30 @@ def build_geometry(label, affine):
         HW = 34.0
         # Cobb construction (Greenberg Fig. 73.1), FULLY precomputed in world mm so
         # the viewer only maps fixed points (no screen-space re-derivation -> can't
-        # flip on scroll): endplate line on L1 and S1; the perpendicular from each
-        # anterior end meets at X. L1's perpendicular STOPS at X, S1's continues
-        # past it, and the angle is L1's pre-intersection ray vs S1's post ray.
+        # flip on scroll). The endplate lines COVER the endplate (corner to corner)
+        # and extend only on the ANGLE side (anterior) to the perpendicular; the
+        # perpendiculars meet at X, L1's STOPS at X and S1's continues past it.
         ant = g.unit(np.cross(lr, sup_s))                  # anterior in-plane axis
         if ant @ np.array([0.0, 1.0, 0.0]) < 0:
             ant = -ant
         e1a = e1 if e1 @ ant >= 0 else -e1                 # endplate dirs -> anterior
         e7a = e7 if e7 @ ant >= 0 else -e7
-        A0, A1 = P1 + HW * e1a, P7 + HW * e7a              # anterior ends
+        EXT = 8.0                                          # extension past the anterior corner
+        c1, c7 = _endplate_corners(label, affine, "L1"), _endplate_corners(label, affine, "S1")
+        if c1 is not None and c7 is not None:
+            Ac1, Pc1 = _project(c1[0], origin, lr), _project(c1[1], origin, lr)
+            Ac7, Pc7 = _project(c7[0], origin, lr), _project(c7[1], origin, lr)
+            A0, A1 = Ac1 + EXT * e1a, Ac7 + EXT * e7a      # anterior ends (at the corner)
+            l1_line, s1_line = _seg(Pc1, A0), _seg(Pc7, A1)   # cover endplate -> angle side
+        else:
+            A0, A1 = P1 + HW * e1a, P7 + HW * e7a
+            l1_line, s1_line = _seg(P1 - HW * e1, P1 + HW * e1), _seg(P7 - HW * e7, P7 + HW * e7)
         X = _intersect(A0, n1s, A1, n7s)                   # perpendiculars meet here
         beyond1 = X + (X - A1) * 0.75                      # S1 perpendicular past X
         bis = g.unit(g.unit(A0 - X) + g.unit(beyond1 - X))
         angles.append(_angle_entry(
             "LL", "Lumbar Lordosis", LL, "#f472b6",
-            [_seg(P1 - HW * e1, P1 + HW * e1), _seg(P7 - HW * e7, P7 + HW * e7)],
+            [l1_line, s1_line],
             [_seg(A0, X), _seg(A1, beyond1)],
             (X, A0, beyond1), X + bis * 54))
 
