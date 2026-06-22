@@ -190,14 +190,20 @@ def build_geometry(label, affine):
             half = 26.0
         end_a, end_b = P - half * e_dir, P + half * e_dir
         s1line = _seg(end_a, end_b)
-        # "1/2 + 1/2" rule on the endplate line: dots at the two ends + midpoint, and
-        # each half's length (equal -> proves P bisects the endplate). Lift labels
-        # above the line along the endplate normal.
-        off = 12.0 * n_s
+        # Legaye "1/2 + 1/2" rule with REAL measurements: ONE dot at the midpoint,
+        # dotted perpendicular ticks at the two ends + midpoint, and a <-> arrow over
+        # each half (above the line, along the endplate normal) with its length.
+        TL, AO = 20.0, 14.0                            # tick length, arrow offset (mm)
         ss_rule = {
-            "dots": [_p(end_a), _p(P), _p(end_b)],
-            "marks": [{"pos": _p(0.5 * (end_a + P) + off), "text": f"{half:.1f} mm"},
-                      {"pos": _p(0.5 * (P + end_b) + off), "text": f"{half:.1f} mm"}],
+            "mid": _p(P),
+            "ticks": [_seg(end_a, end_a + TL * n_s), _seg(P, P + TL * n_s),
+                      _seg(end_b, end_b + TL * n_s)],
+            "spans": [
+                {"a": _p(end_a + AO * n_s), "b": _p(P + AO * n_s),
+                 "label": _p(0.5 * (end_a + P) + (AO + 8) * n_s), "text": f"{half:.1f} mm"},
+                {"a": _p(P + AO * n_s), "b": _p(end_b + AO * n_s),
+                 "label": _p(0.5 * (P + end_b) + (AO + 8) * n_s), "text": f"{half:.1f} mm"},
+            ],
         }
         radius = g.unit(P - M)                             # hip-axis -> S1 midpoint
         PI = g.angle_between(n_s, radius)
@@ -220,10 +226,10 @@ def build_geometry(label, affine):
         angles.append(_angle_entry(
             "SS", "Sacral Slope", SS, "#60a5fa",
             [s1line],
-            [_seg(P + half * e_post, P + (half + 55.0) * e_post),
+            [_seg(P + half * e_post, P + (half + 70.0) * e_post),
              _seg(P, P + HRLL * horiz_post)],
             (P, P + 44 * e_post, P + 44 * horiz_post),
-            P + 64 * horiz_post + 14 * sup_s, rule=ss_rule, arc_r_px=52))
+            P + 78 * horiz_post + 16 * sup_s, rule=ss_rule, arc_r_px=92))
         # PI: S1-endplate perpendicular (into the pelvis) vs the pelvic radius to the
         # femoral-head axis; wedge at the S1 midpoint. Label sits slightly POSTERIOR
         # (dynamic) so it doesn't collide with PT.
@@ -261,13 +267,14 @@ def build_geometry(label, affine):
             ant = -ant
         e1a = e1 if e1 @ ant >= 0 else -e1                 # endplate dirs -> anterior
         e7a = e7 if e7 @ ant >= 0 else -e7
-        EXT = 8.0                                          # extension past the anterior corner
         c1, c7 = _endplate_corners(label, affine, "L1"), _endplate_corners(label, affine, "S1")
         if c1 is not None and c7 is not None:
             Ac1, Pc1 = _project(c1[0], origin, lr), _project(c1[1], origin, lr)
             Ac7, Pc7 = _project(c7[0], origin, lr), _project(c7[1], origin, lr)
-            A0, A1 = Ac1 + EXT * e1a, Ac7 + EXT * e7a      # anterior ends (at the corner)
-            l1_line, s1_line = _seg(Pc1, A0), _seg(Pc7, A1)   # cover endplate -> angle side
+            A0, A1 = Ac1, Ac7                              # perpendiculars erected at the corner
+            # SOLID endplate line covers the endplate exactly (terminates at the
+            # corners); only the perpendicular below extends past it.
+            l1_line, s1_line = _seg(Pc1, Ac1), _seg(Pc7, Ac7)
         else:
             A0, A1 = P1 + HW * e1a, P7 + HW * e7a
             l1_line, s1_line = _seg(P1 - HW * e1, P1 + HW * e1), _seg(P7 - HW * e7, P7 + HW * e7)
