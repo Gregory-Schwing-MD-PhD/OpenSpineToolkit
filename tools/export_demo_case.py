@@ -68,6 +68,17 @@ def _endplate(label, affine, level, neighbor=None, min_voxels=30):
                                      min_points=min_voxels)
 
 
+def _s1_corners(label, affine):
+    """Anterior & posterior cortical corners of the S1 superior endplate (world mm),
+    so the drawn endplate line is the actual traced segment and PI/SS/PT anchor on
+    its true midpoint. Returns (anterior, posterior) or None."""
+    src = "S1" if binary_mask(label, lid("S1")).any() else "sacrum"
+    pts = mask_world(largest_component(binary_mask(label, lid(src))), affine)
+    res = spine.endplate_corners(pts, which="superior",
+                                 **spine.corner_params_for_level("S1"))
+    return None if res is None else (res[0], res[1])
+
+
 def _project(p, origin, lr):
     p = np.asarray(p, float)
     return p - ((p - origin) @ lr) * lr
@@ -137,13 +148,23 @@ def build_geometry(label, affine):
         points += [{"id": "bicoxofemoral", "pos": _p(M)}]
 
     if s1 is not None and fem is not None:
-        # P = S1 endplate MIDPOINT (the corner-chord midpoint from the primitive),
-        # the anchor the conventional construction hangs off (Legaye/Greenberg fig).
-        P = _project(s1[0], origin, lr)
+        # The S1 endplate line is the ACTUAL traced corner-to-corner segment, and the
+        # construction anchors P on ITS midpoint (the Legaye/Greenberg "1/2 1/2"
+        # point) — so PI/SS/PT point to the true sacral-endplate body midpoint, not a
+        # fixed-width stub's centre.
         n_s = g.unit(g.project_out(s1[1], lr))
         if n_s @ sup_s < 0:
             n_s = -n_s
         e_dir = g.unit(np.cross(lr, n_s))                  # S1 endplate line direction
+        s1c = _s1_corners(label, affine)                   # (anterior, posterior) world mm
+        if s1c is not None:
+            A_s = _project(s1c[0], origin, lr)
+            Pc_s = _project(s1c[1], origin, lr)
+            P = 0.5 * (A_s + Pc_s)                          # midpoint of the traced line
+            s1line = _seg(A_s, Pc_s)
+        else:
+            P = _project(s1[0], origin, lr)
+            s1line = _seg(P - 26.0 * e_dir, P + 26.0 * e_dir)
         radius = g.unit(P - M)                             # hip-axis -> S1 midpoint
         PI = g.angle_between(n_s, radius)
         SS = g.angle_between(e_dir, horiz)
@@ -153,27 +174,31 @@ def build_geometry(label, affine):
         if ant_p[1] < 0:
             ant_p = -ant_p
         horiz_post = horiz if horiz @ ant_p < 0 else -horiz
+        horiz_ant = -horiz_post                            # anterior horizontal (dynamic)
         e_post = e_dir if e_dir @ ant_p < 0 else -e_dir
-        EW, HRLL, PERP, VRLL = 26.0, 92.0, 80.0, 92.0
-        s1line = _seg(P - EW * e_dir, P + EW * e_dir)      # SOLID S1 endplate line
-        # SS: S1 endplate vs HRL (horizontal through the midpoint, projecting posterior)
+        HRLL, PERP, VRLL = 92.0, 80.0, 92.0
+        points += [{"id": "s1_midpoint", "pos": _p(P)}]    # the "1/2 1/2" anchor
+        # SS: S1 endplate vs HRL — the HRL ORIGINATES at the midpoint and projects
+        # posterior; label written along the HRL.
         angles.append(_angle_entry(
             "SS", "Sacral Slope", SS, "#60a5fa",
-            [s1line], [_seg(P - 16 * horiz_post, P + HRLL * horiz_post)],
+            [s1line], [_seg(P, P + HRLL * horiz_post)],
             (P, P + 44 * e_post, P + 44 * horiz_post),
-            P + 58 * horiz_post + 26 * sup_s))
+            P + 50 * horiz_post + 11 * sup_s))
         # PI: S1-endplate perpendicular (into the pelvis) vs the pelvic radius to the
-        # femoral-head axis; wedge at the S1 midpoint.
+        # femoral-head axis; wedge at the S1 midpoint. Label sits slightly POSTERIOR
+        # (dynamic) so it doesn't collide with PT.
         angles.append(_angle_entry(
             "PI", "Pelvic Incidence", PI, "#36d399",
             [s1line], [_seg(P, P - PERP * n_s), _seg(P, M)],
             (P, P - 46 * n_s, P + 46 * g.unit(M - P)),
-            P + g.unit(g.unit(M - P) - n_s) * 50))
-        # PT: pelvic radius vs vertical (VRL), wedge at the femoral-head axis
+            P + 30 * horiz_post - 34 * sup_s))
+        # PT: pelvic radius vs vertical (VRL), wedge at the femoral-head axis. Label
+        # on the ANTERIOR side (dynamic) so PI and PT can be read at the same time.
         angles.append(_angle_entry(
             "PT", "Pelvic Tilt", PT, "#fbbf24",
             [], [_seg(M - 16 * sup_s, M + VRLL * sup_s), _seg(M, P)],
-            (M, M + 46 * sup_s, M + 46 * radius), M + g.unit(radius + sup_s) * 48))
+            (M, M + 46 * sup_s, M + 46 * radius), M + 46 * horiz_ant + 30 * sup_s))
 
     if s1 is not None and l1 is not None:
         P1, n1, _ = l1
