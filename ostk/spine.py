@@ -73,24 +73,29 @@ def endplate_surface(points, normal_axis=WORLD_SUPERIOR, which: str = "superior"
 
 
 def endplate_corners(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
-                     lat_frac: float = 0.55, drop_post: float = 0.30,
+                     lat_frac: float = 0.70, drop_post: float = 0.30,
                      ant_skip: float = 0.08, corner_win: float = 0.15,
-                     nbins: int = 26, lr=(1.0, 0.0, 0.0)):
+                     reject_k: float = 1.8, nbins: int = 26, lr=(1.0, 0.0, 0.0)):
     """The two cortical CORNERS that define the clinical AP-corner + tangent endplate
-    line (methods 1+3), found body-first and osteophyte-robustly:
+    line (methods 1+3), found body-first and off-plate-robustly:
 
       1. medial band (drops lateral processes / sacral alae);
-      2. cortical top-profile (highest disc-facing point per A-P column);
+      2. top SURFACE: the disc-facing cortical voxel per (A-P, L-R) cell — a true 2-D
+         surface, so deviations along the plate NORMAL can be judged;
       3. BODY: drop the posterior `drop_post` of the A-P extent (pedicle / canal /
          spinous process / dorsal sacrum) BY POSITION — not by height, which would
          chop the low anterior corner of a tilted sacral endplate;
-      4. corners: posterior corner at the back of the body; anterior corner a little
-         INSIDE the margin (`ant_skip` past the tip — the tangent variant) so an
-         anterior osteophyte lip or a margin edge artifact is bridged, not chased.
+      4. PCA plate fit, iteratively REJECTING points that deviate along the plate
+         normal (the small PCA axis, ≈ S-I): the superior articular facet juts ABOVE
+         the plate and the sacral canal / nerve-root hollow plunges BELOW it — both
+         are off the endplate, while the A-P–L-R plate itself is not;
+      5. corners: posterior corner at the back of the cleaned surface; anterior corner
+         a little INSIDE the margin (`ant_skip`) — the tangent variant — so an
+         anterior osteophyte lip / edge artifact is bridged, not chased.
 
-    Returns (anterior_corner, posterior_corner, body) or None. The chord through the
-    corners bridges endplate concavity (standard anatomy) and works on both concave
-    (lumbar) and convex (sacral promontory) endplates."""
+    Returns (anterior_corner, posterior_corner, surface) or None. The chord through
+    the corners bridges endplate concavity and works on both concave (lumbar) and
+    convex (sacral promontory) endplates."""
     P = np.asarray(points, dtype=np.float64)
     a = unit(normal_axis)
     lrv = unit(lr)
@@ -102,32 +107,41 @@ def endplate_corners(points, normal_axis=WORLD_SUPERIOR, which: str = "superior"
     if len(P) < 6:
         return None
     sgn = 1.0 if which == "superior" else -1.0          # which cortical face
-    # cortical top-profile: the highest (disc-facing) point per A-P column
-    pr = (P - P.mean(0)) @ ap
-    edges = np.linspace(pr.min(), pr.max(), nbins + 1)
-    prof = []
-    for i in range(nbins):
-        m = (pr >= edges[i]) & (pr <= edges[i + 1])
-        if m.sum() < 4:
-            continue
-        seg = P[m]
-        prof.append(seg[np.argmax(sgn * (seg @ a))])
-    prof = np.asarray(prof)
-    if len(prof) < 4:
+    # top SURFACE: the disc-facing cortical voxel per (A-P, L-R) cell
+    sc = (P - P.mean(0)) @ ap
+    lc = (P - P.mean(0)) @ lrv
+    si = np.floor((sc - sc.min()) / (np.ptp(sc) + 1e-9) * nbins).astype(int)
+    li = np.floor((lc - lc.min()) / (np.ptp(lc) + 1e-9) * nbins).astype(int)
+    key = si * (nbins + 1) + li
+    order = np.lexsort((-sgn * (P @ a), key))           # disc-facing voxel first per cell
+    ks = key[order]
+    first = np.ones(len(order), bool)
+    first[1:] = ks[1:] != ks[:-1]
+    surf = P[order[first]]
+    if len(surf) < 6:
         return None
-    # BODY: drop the posterior `drop_post` BY A-P POSITION (pedicle / canal / spinous
-    # process / dorsal sacrum) — not by height, which would chop the low anterior
-    # corner of a tilted sacral endplate and read the sacral slope as ~flat.
-    ppr = (prof - prof.mean(0)) @ ap
-    ppr = (ppr - ppr.min()) / (np.ptp(ppr) + 1e-9)      # 0 = posterior, 1 = anterior
-    body = prof[ppr >= drop_post]
-    bpr = ppr[ppr >= drop_post]
-    if len(body) < 3:
-        body, bpr = prof, ppr
-    bpr = (bpr - bpr.min()) / (np.ptp(bpr) + 1e-9)
-    # Tangent corners (clinical 1+3): posterior corner at the back of the body, and
-    # the anterior corner a little INSIDE the margin (`ant_skip` past the tip) so an
-    # anterior osteophyte lip / margin edge artifact is bridged, not chased.
+    # BODY: drop posterior elements BY A-P POSITION (not height)
+    pr = (surf - surf.mean(0)) @ ap
+    pr = (pr - pr.min()) / (np.ptp(pr) + 1e-9)
+    body = surf[pr >= drop_post]
+    if len(body) < 6:
+        body = surf
+    # robust PCA plate; reject points that deviate along the plate NORMAL (≈ S-I):
+    # the articular facet (above) and the canal / nerve-root hollow (below).
+    keep = np.ones(len(body), bool)
+    for _ in range(10):
+        c, n, _ = fit_plane_tls(body[keep])
+        r = (body - c) @ n
+        med = np.median(r[keep])
+        mad = np.median(np.abs(r[keep] - med)) + 1e-6
+        nk = np.abs(r - med) <= reject_k * mad
+        if int(nk.sum()) == int(keep.sum()) or nk.sum() < 6:
+            break
+        keep = nk
+    body = body[keep]
+    # tangent corners on the cleaned endplate surface
+    bpr = (body - body.mean(0)) @ ap
+    bpr = (bpr - bpr.min()) / (np.ptp(bpr) + 1e-9)      # 0 = posterior, 1 = anterior
     post = body[bpr <= corner_win]
     ant = body[(bpr >= 1 - ant_skip - corner_win) & (bpr <= 1 - ant_skip)]
     if len(post) == 0:
