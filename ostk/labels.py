@@ -20,6 +20,9 @@ LABELS = {
     "nerve_L5_left": 55, "nerve_L5_right": 56,
     "nerve_S1_left": 57, "nerve_S1_right": 58,
     "psoas_left": 59, "psoas_right": 60,                 # v4 (XLIF corridor)
+    "aorta": 61, "inferior_vena_cava": 62,               # v4 great vessels (CT TS;
+    "iliac_artery_left": 63, "iliac_artery_right": 64,   # anterior-approach planning)
+    "iliac_vena_left": 65, "iliac_vena_right": 66,
 }
 ID_TO_NAME = {v: k for k, v in LABELS.items()}
 
