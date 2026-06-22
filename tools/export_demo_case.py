@@ -156,15 +156,17 @@ def build_geometry(label, affine):
         if n_s @ sup_s < 0:
             n_s = -n_s
         e_dir = g.unit(np.cross(lr, n_s))                  # S1 endplate line direction
-        # P = endplate centroid (== ostk.metrics' endplate midpoint, so the drawn PI/PT
-        # match the report). Draw the endplate line CENTRED on P, spanning the surface.
-        P = _project(s1[0], origin, lr)
+        # P = over-mask endplate midpoint, ON the rim (== ostk.metrics' PI/PT radius
+        # origin, so the drawn angles match the report). Draw the endplate line CENTRED
+        # on P, spanning the over-mask portion. (S1 only; the LL/L1 line is untouched.)
+        om = spine.endplate_overmask_midpoint_from_label(label, affine, "S1")
+        P = _project(om, origin, lr) if om is not None else _project(s1[0], origin, lr)
         surf = _s1_endplate_surface(label, affine)
         if surf is not None and len(surf) >= 6:
             surf_p = surf - ((surf - origin) @ lr)[:, None] * lr   # project to sag plane
-            proj = (surf_p - P) @ e_dir                            # P is the over-mask centre
-            lo, hi = np.percentile(proj, [3.0, 97.0])              # clip to the over-mask span
-            s1line = _seg(P + lo * e_dir, P + hi * e_dir)
+            proj = (surf_p - P) @ e_dir
+            half = 0.5 * float(np.percentile(proj, 97.0) - np.percentile(proj, 3.0))
+            s1line = _seg(P - half * e_dir, P + half * e_dir)
         else:
             s1line = _seg(P - 26.0 * e_dir, P + 26.0 * e_dir)
         radius = g.unit(P - M)                             # hip-axis -> S1 midpoint

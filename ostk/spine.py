@@ -215,6 +215,46 @@ def fit_endplate(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
     return c, n, rms
 
 
+def endplate_overmask_midpoint(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
+                               lr=(1.0, 0.0, 0.0), lo_pct: float = 3.0,
+                               hi_pct: float = 97.0, **corner_kw):
+    """Midpoint of the endplate portion that is OVER the body mask, kept ON the rim.
+
+    The cleaned surface points are the per-column tops of the body, so their extent
+    along the endplate direction is the over-mask span; take its (outlier-robust)
+    centre and PROJECT it onto the anterior–posterior corner (rim) line, so the point
+    sits on the cortical endplate rather than dipping into the endplate concavity.
+    Use this as the PI/PT radius origin / construction anchor. It does NOT change the
+    endplate orientation (the rim line / normal), so lordosis is unaffected.
+    Returns a world-mm point, or None."""
+    res = endplate_corners(points, normal_axis, which, lr=lr, **corner_kw)
+    if res is None:
+        return None
+    A, Pc, body = res
+    e_dir = unit(np.cross(unit(lr), unit(Pc - A)))
+    c0 = body.mean(axis=0)
+    proj = (body - c0) @ e_dir
+    lo, hi = np.percentile(proj, [lo_pct, hi_pct])
+    center = c0 + 0.5 * (lo + hi) * e_dir          # over-mask A-P centre
+    el = unit(Pc - A)                              # rim line direction
+    return A + float((center - A) @ el) * el       # on the rim, at the over-mask centre
+
+
+def endplate_overmask_midpoint_from_label(label, affine, level: str,
+                                          normal_axis=WORLD_SUPERIOR,
+                                          which: str = "superior", lr=(1.0, 0.0, 0.0)):
+    """`endplate_overmask_midpoint` straight from a label volume + structure name
+    (S1 falls back to the sacrum label)."""
+    from .labels import lid
+    from .masks import binary_mask, largest_component, mask_world
+    m = binary_mask(label, lid(level))
+    if level == "S1" and not m.any():
+        m = binary_mask(label, lid("sacrum"))
+    pts = mask_world(largest_component(m), affine)
+    return endplate_overmask_midpoint(pts, normal_axis, which, lr=lr,
+                                      **corner_params_for_level(level))
+
+
 def endplate_from_label(label, affine, level: str, which: str = "superior",
                         normal_axis=WORLD_SUPERIOR, method: str = "corner",
                         ap_band=(0.3, 0.9), lr=(1.0, 0.0, 0.0), min_points: int = 30):

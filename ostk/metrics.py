@@ -80,7 +80,7 @@ def _pi_from_label_core(label, affine, sup_axis, endplate_frac, head_frac,
     but no longer used. Returns (result_dict_or_None, flags)."""
     from .labels import lid
     from .masks import binary_mask, largest_component, mask_world, surface_slab
-    from .spine import endplate_from_label
+    from .spine import endplate_from_label, endplate_overmask_midpoint_from_label
 
     flags: list = []
     ep_plane = endplate_from_label(label, affine, "S1", "superior",
@@ -99,6 +99,12 @@ def _pi_from_label_core(label, affine, sup_axis, endplate_frac, head_frac,
         return None, flags
 
     m, n, ep_rms = ep_plane
+    # PI/PT radius origin = midpoint of the endplate portion over the body, on the rim
+    # (more accurate than the corner-midpoint, which the anterior tangent skip biases
+    # posterior). Orientation (n) is unchanged, so SS/LL are unaffected.
+    om = endplate_overmask_midpoint_from_label(label, affine, "S1", sup_axis, "superior")
+    if om is not None:
+        m = om
     r = _pi_from_plane(m, n, ep_rms, fhl, fhr, sup_axis)
     if abs(r["SS"] + r["PT"] - r["PI"]) > 1.0:         # geometric identity check
         flags.append("identity_violation")
