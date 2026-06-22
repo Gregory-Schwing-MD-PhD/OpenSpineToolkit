@@ -68,15 +68,34 @@ def _endplate(label, affine, level, neighbor=None, min_voxels=30):
                                      min_points=min_voxels)
 
 
-def _s1_endplate_surface(label, affine):
-    """The cleaned S1 superior-endplate surface points (world mm), so the drawn
-    endplate line spans the true endplate and PI/SS/PT anchor on its geometric
-    centre. Returns the (N,3) surface or None."""
-    src = "S1" if binary_mask(label, lid("S1")).any() else "sacrum"
+def _endplate_surface(label, affine, level):
+    """The cleaned superior-endplate surface points (world mm) for a level, so the
+    drawn endplate line spans the true endplate. Returns the (N,3) surface or None."""
+    src = level
+    if level == "S1" and not binary_mask(label, lid("S1")).any():
+        src = "sacrum"
     pts = mask_world(largest_component(binary_mask(label, lid(src))), affine)
     res = spine.endplate_corners(pts, which="superior",
-                                 **spine.corner_params_for_level("S1"))
+                                 **spine.corner_params_for_level(level))
     return None if res is None else np.asarray(res[2], float)
+
+
+def _endplate_span(label, affine, level, origin, lr, e_dir):
+    """(midpoint P, end_a, end_b) of the over-mask endplate LINE for a level, all
+    projected into the sagittal plane: P is the over-mask midpoint and the line spans
+    the over-mask portion along the endplate direction. The ONE construction used for
+    every endplate line (SS and the LL L1/S1 lines), so they look identical."""
+    om = spine.endplate_overmask_midpoint_from_label(label, affine, level)
+    if om is None:
+        return None
+    P = _project(om, origin, lr)
+    surf = _endplate_surface(label, affine, level)
+    if surf is None or len(surf) < 6:
+        return P, P - 18.0 * e_dir, P + 18.0 * e_dir
+    surf_p = surf - ((surf - origin) @ lr)[:, None] * lr
+    proj = (surf_p - P) @ e_dir
+    half = 0.5 * float(np.percentile(proj, 97.0) - np.percentile(proj, 3.0))
+    return P, P - half * e_dir, P + half * e_dir
 
 
 def _endplate_corners(label, affine, level):
@@ -176,19 +195,16 @@ def build_geometry(label, affine):
         if n_s @ sup_s < 0:
             n_s = -n_s
         e_dir = g.unit(np.cross(lr, n_s))                  # S1 endplate line direction
-        # P = over-mask endplate midpoint, ON the rim (== ostk.metrics' PI/PT radius
-        # origin, so the drawn angles match the report). Draw the endplate line CENTRED
-        # on P, spanning the over-mask portion. (S1 only; the LL/L1 line is untouched.)
-        om = spine.endplate_overmask_midpoint_from_label(label, affine, "S1")
-        P = _project(om, origin, lr) if om is not None else _project(s1[0], origin, lr)
-        surf = _s1_endplate_surface(label, affine)
-        if surf is not None and len(surf) >= 6:
-            surf_p = surf - ((surf - origin) @ lr)[:, None] * lr   # project to sag plane
-            proj = (surf_p - P) @ e_dir
-            half = 0.5 * float(np.percentile(proj, 97.0) - np.percentile(proj, 3.0))
+        # The S1 endplate line = the over-mask span (the ONE shared construction, also
+        # used for the LL lines). P is its midpoint (== ostk.metrics' PI/PT radius
+        # origin, so the drawn angles match the report).
+        span = _endplate_span(label, affine, "S1", origin, lr, e_dir)
+        if span is not None:
+            P, end_a, end_b = span
         else:
-            half = 26.0
-        end_a, end_b = P - half * e_dir, P + half * e_dir
+            P = _project(s1[0], origin, lr)
+            end_a, end_b = P - 26.0 * e_dir, P + 26.0 * e_dir
+        half = float(np.linalg.norm(end_b - P))
         s1line = _seg(end_a, end_b)
         # Legaye "1/2 + 1/2" rule with REAL measurements: ONE dot at the midpoint,
         # dotted perpendicular ticks at the two ends + midpoint, and a <-> arrow over
@@ -200,9 +216,9 @@ def build_geometry(label, affine):
                       _seg(end_b, end_b + TL * n_s)],
             "spans": [
                 {"a": _p(end_a + AO * n_s), "b": _p(P + AO * n_s),
-                 "label": _p(0.5 * (end_a + P) + (AO + 8) * n_s), "text": f"{half:.1f} mm"},
+                 "label": _p(end_a + 0.38 * (P - end_a) + (AO + 9) * n_s), "text": f"{half:.1f} mm"},
                 {"a": _p(P + AO * n_s), "b": _p(end_b + AO * n_s),
-                 "label": _p(0.5 * (P + end_b) + (AO + 8) * n_s), "text": f"{half:.1f} mm"},
+                 "label": _p(end_b + 0.38 * (P - end_b) + (AO + 9) * n_s), "text": f"{half:.1f} mm"},
             ],
         }
         radius = g.unit(P - M)                             # hip-axis -> S1 midpoint
@@ -267,14 +283,20 @@ def build_geometry(label, affine):
             ant = -ant
         e1a = e1 if e1 @ ant >= 0 else -e1                 # endplate dirs -> anterior
         e7a = e7 if e7 @ ant >= 0 else -e7
-        c1, c7 = _endplate_corners(label, affine, "L1"), _endplate_corners(label, affine, "S1")
-        if c1 is not None and c7 is not None:
-            Ac1, Pc1 = _project(c1[0], origin, lr), _project(c1[1], origin, lr)
-            Ac7, Pc7 = _project(c7[0], origin, lr), _project(c7[1], origin, lr)
-            A0, A1 = Ac1, Ac7                              # perpendiculars erected at the corner
-            # SOLID endplate line covers the endplate exactly (terminates at the
-            # corners); only the perpendicular below extends past it.
-            l1_line, s1_line = _seg(Pc1, Ac1), _seg(Pc7, Ac7)
+        EXT = 14.0                                         # solid anterior projection
+        sp1 = _endplate_span(label, affine, "L1", origin, lr, e1)
+        sp7 = _endplate_span(label, affine, "S1", origin, lr, e7)
+        if sp1 is not None and sp7 is not None:
+            P1m, a1, b1 = sp1                              # SAME over-mask span as SS draws
+            P7m, a7, b7 = sp7
+            l1_ant = a1 if (a1 - P1m) @ e1a > 0 else b1    # anterior / posterior ends
+            l1_post = b1 if (a1 - P1m) @ e1a > 0 else a1
+            s1_ant = a7 if (a7 - P7m) @ e7a > 0 else b7
+            s1_post = b7 if (a7 - P7m) @ e7a > 0 else a7
+            A0, A1 = l1_ant + EXT * e1a, s1_ant + EXT * e7a   # perpendicular erected here
+            # SOLID line = the endplate span + a small anterior projection; the
+            # POSTERIOR end terminates where the endplate ends (same logic as SS).
+            l1_line, s1_line = _seg(l1_post, A0), _seg(s1_post, A1)
         else:
             A0, A1 = P1 + HW * e1a, P7 + HW * e7a
             l1_line, s1_line = _seg(P1 - HW * e1, P1 + HW * e1), _seg(P7 - HW * e7, P7 + HW * e7)
