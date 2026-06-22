@@ -72,16 +72,101 @@ def endplate_surface(points, normal_axis=WORLD_SUPERIOR, which: str = "superior"
     return P[order[first]]
 
 
+def endplate_corners(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
+                     lat_frac: float = 0.55, drop_post: float = 0.30,
+                     ant_skip: float = 0.08, corner_win: float = 0.15,
+                     nbins: int = 26, lr=(1.0, 0.0, 0.0)):
+    """The two cortical CORNERS that define the clinical AP-corner + tangent endplate
+    line (methods 1+3), found body-first and osteophyte-robustly:
+
+      1. medial band (drops lateral processes / sacral alae);
+      2. cortical top-profile (highest disc-facing point per A-P column);
+      3. BODY: drop the posterior `drop_post` of the A-P extent (pedicle / canal /
+         spinous process / dorsal sacrum) BY POSITION — not by height, which would
+         chop the low anterior corner of a tilted sacral endplate;
+      4. corners: posterior corner at the back of the body; anterior corner a little
+         INSIDE the margin (`ant_skip` past the tip — the tangent variant) so an
+         anterior osteophyte lip or a margin edge artifact is bridged, not chased.
+
+    Returns (anterior_corner, posterior_corner, body) or None. The chord through the
+    corners bridges endplate concavity (standard anatomy) and works on both concave
+    (lumbar) and convex (sacral promontory) endplates."""
+    P = np.asarray(points, dtype=np.float64)
+    a = unit(normal_axis)
+    lrv = unit(lr)
+    ap = anterior_axis(a, lr)
+    if 0.0 < lat_frac < 1.0:
+        lp = P @ lrv
+        lo, hi = np.quantile(lp, [(1 - lat_frac) / 2, 1 - (1 - lat_frac) / 2])
+        P = P[(lp >= lo) & (lp <= hi)]
+    if len(P) < 6:
+        return None
+    sgn = 1.0 if which == "superior" else -1.0          # which cortical face
+    # cortical top-profile: the highest (disc-facing) point per A-P column
+    pr = (P - P.mean(0)) @ ap
+    edges = np.linspace(pr.min(), pr.max(), nbins + 1)
+    prof = []
+    for i in range(nbins):
+        m = (pr >= edges[i]) & (pr <= edges[i + 1])
+        if m.sum() < 4:
+            continue
+        seg = P[m]
+        prof.append(seg[np.argmax(sgn * (seg @ a))])
+    prof = np.asarray(prof)
+    if len(prof) < 4:
+        return None
+    # BODY: drop the posterior `drop_post` BY A-P POSITION (pedicle / canal / spinous
+    # process / dorsal sacrum) — not by height, which would chop the low anterior
+    # corner of a tilted sacral endplate and read the sacral slope as ~flat.
+    ppr = (prof - prof.mean(0)) @ ap
+    ppr = (ppr - ppr.min()) / (np.ptp(ppr) + 1e-9)      # 0 = posterior, 1 = anterior
+    body = prof[ppr >= drop_post]
+    bpr = ppr[ppr >= drop_post]
+    if len(body) < 3:
+        body, bpr = prof, ppr
+    bpr = (bpr - bpr.min()) / (np.ptp(bpr) + 1e-9)
+    # Tangent corners (clinical 1+3): posterior corner at the back of the body, and
+    # the anterior corner a little INSIDE the margin (`ant_skip` past the tip) so an
+    # anterior osteophyte lip / margin edge artifact is bridged, not chased.
+    post = body[bpr <= corner_win]
+    ant = body[(bpr >= 1 - ant_skip - corner_win) & (bpr <= 1 - ant_skip)]
+    if len(post) == 0:
+        post = body[[int(np.argmin(bpr))]]
+    if len(ant) == 0:
+        ant = body[[int(np.argmax(bpr))]]
+    Pc = post[np.argmax(sgn * (post @ a))]
+    A = ant[np.argmax(sgn * (ant @ a))]
+    return A, Pc, body
+
+
 def fit_endplate(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
-                 ap_band=(0.3, 0.9), lat_frac: float = 0.55, lr=(1.0, 0.0, 0.0),
-                 min_points: int = 30
+                 method: str = "corner", ap_band=(0.3, 0.9), lat_frac: float = 0.55,
+                 lr=(1.0, 0.0, 0.0), min_points: int = 30
                  ) -> Optional[Tuple[np.ndarray, np.ndarray, float]]:
     """Fit the superior/inferior endplate plane of a vertebral-body point cloud.
-    Returns (centroid, unit normal oriented cranially for 'superior', rms) or None
-    if there aren't enough points."""
+    Returns (centroid, unit normal oriented cranially for 'superior', rms) or None.
+
+    `method='corner'` (default) is the clinical AP-corner + tangent method: the
+    endplate line runs through the anterior- and posterior-superior cortical
+    corners, BRIDGING endplate concavity (standard anatomy) the way a radiologist
+    draws a Cobb line. `method='surface'` is the biomechanical best-fit to the
+    cortical top-surface (least-squares) — truer to the whole surface area but
+    pulled into the concavity, so it is not used for sagittal-alignment angles."""
     P = np.asarray(points, dtype=np.float64)
     if len(P) < min_points:
         return None
+    if method == "corner":
+        res = endplate_corners(P, normal_axis, which, lat_frac=lat_frac, lr=lr)
+        if res is None:
+            return None
+        A, Pc, body = res
+        mid = 0.5 * (A + Pc)
+        n = unit(np.cross(unit(lr), unit(Pc - A)))
+        rms = float(np.sqrt(np.mean(((body - mid) @ n) ** 2)))
+        a = unit(normal_axis)
+        if (which == "superior") != (n @ a >= 0):
+            n = -n
+        return mid, n, rms
     surf = endplate_surface(P, normal_axis, which, ap_band, lat_frac, lr=lr)
     if len(surf) < min_points:
         surf = P
@@ -105,8 +190,9 @@ def fit_endplate(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
 
 
 def endplate_from_label(label, affine, level: str, which: str = "superior",
-                        normal_axis=WORLD_SUPERIOR, ap_band=(0.3, 0.9),
-                        lat_frac: float = 0.55, lr=(1.0, 0.0, 0.0), min_points: int = 30):
+                        normal_axis=WORLD_SUPERIOR, method: str = "corner",
+                        ap_band=(0.3, 0.9), lat_frac: float = 0.55,
+                        lr=(1.0, 0.0, 0.0), min_points: int = 30):
     """Convenience: fit an endplate straight from a label volume + structure name.
     For S1 falls back to the sacrum label if the carved S1 is absent."""
     from .labels import lid
@@ -115,5 +201,5 @@ def endplate_from_label(label, affine, level: str, which: str = "superior",
     if level == "S1" and not m.any():
         m = binary_mask(label, lid("sacrum"))
     pts = mask_world(largest_component(m), affine)
-    return fit_endplate(pts, normal_axis, which, ap_band=ap_band,
+    return fit_endplate(pts, normal_axis, which, method=method, ap_band=ap_band,
                         lat_frac=lat_frac, lr=lr, min_points=min_points)
