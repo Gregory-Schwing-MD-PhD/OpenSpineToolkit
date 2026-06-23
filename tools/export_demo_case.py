@@ -316,13 +316,18 @@ def build_geometry(label, affine, endplate_rule=False):
             A0, A1 = P1 + HW * e1a, P7 + HW * e7a
             l1_line, s1_line = _seg(P1 - HW * e1, P1 + HW * e1), _seg(P7 - HW * e7, P7 + HW * e7)
         X = _intersect(A0, n1s, A1, n7s)                   # perpendiculars meet here
-        beyond1 = X + (X - A1) * 0.75                      # S1 perpendicular past X
-        bis = g.unit(g.unit(A0 - X) + g.unit(beyond1 - X))
+        # Both dotted perpendiculars must reach PAST the arc radius from X, else the
+        # LL arc floats with nothing to land on. Extend each arm to >= arc_r + margin.
+        R_LL = 40.0
+        arm0 = g.unit(A0 - X); arm1 = g.unit(X - A1)
+        tip0 = X + max(float(np.linalg.norm(A0 - X)), R_LL + 18.0) * arm0   # L1 perp tip
+        tip1 = X + max(float(np.linalg.norm(X - A1)) * 0.75, R_LL + 18.0) * arm1  # S1 perp past X
+        bis = g.unit(arm0 + arm1)
         angles.append(_angle_entry(
             "LL", "Lumbar Lordosis", LL, "#f472b6",
             [l1_line, s1_line],
-            [_seg(A0, X), _seg(A1, beyond1)],
-            (X, A0, beyond1), X + bis * 54, arc_r_mm=40))
+            [_seg(tip0, X), _seg(A1, tip1)],            # L1 perp (extended), S1 perp (A1→past X)
+            (X, tip0, tip1), X + bis * 54, arc_r_mm=R_LL))
 
     return {"sagittal_normal": [round(float(x), 4) for x in lr],
             "plane_origin": _p(origin), "view_center": _p(view_center),
