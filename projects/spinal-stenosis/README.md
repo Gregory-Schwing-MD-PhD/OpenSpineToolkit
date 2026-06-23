@@ -1,6 +1,6 @@
 # Spinal Stenosis
 
-**Miniproject — OpenSpineToolbox**
+**Miniproject — OpenSpineToolkit**
 
 ## Goal
 Detect and grade narrowing of the spinal canal at each level.

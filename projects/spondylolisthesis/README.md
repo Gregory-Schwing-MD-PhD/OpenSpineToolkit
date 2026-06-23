@@ -1,6 +1,6 @@
 # Spondylolisthesis
 
-**Miniproject — OpenSpineToolbox**
+**Miniproject — OpenSpineToolkit**
 
 ## Goal
 Detect and grade vertebral slip (e.g. Meyerding grade) from the AP offset of

@@ -1,6 +1,6 @@
 # Lordosis Distribution Index (LDI)
 
-**Miniproject — OpenSpineToolbox**
+**Miniproject — OpenSpineToolkit**
 
 ## Goal
 Compute LDI = (lower-arc lordosis / total lumbar lordosis) × 100, describing how

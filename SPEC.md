@@ -1,4 +1,4 @@
-# OpenSpineToolbox — Programming Spec & Shared Mask Contract
+# OpenSpineToolkit — Programming Spec & Shared Mask Contract
 
 This is the **authoritative technical contract** for miniprojects that compute
 measurements from CTSpinoPelvic1K segmentation masks. The top-level

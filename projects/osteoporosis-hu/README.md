@@ -1,6 +1,6 @@
 # Osteoporosis / HU Calculation
 
-**Miniproject — OpenSpineToolbox**
+**Miniproject — OpenSpineToolkit**
 
 ## Goal
 Estimate bone mineral density by sampling trabecular Hounsfield Units (HU)

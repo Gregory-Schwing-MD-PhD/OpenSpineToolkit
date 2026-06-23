@@ -1,6 +1,6 @@
 # Lumbar Vertebral Spacing
 
-**Miniproject — OpenSpineToolbox**
+**Miniproject — OpenSpineToolkit**
 
 ## Goal
 Measure the spacing between adjacent vertebral body centroids along the lumbar

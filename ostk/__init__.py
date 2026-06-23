@@ -1,4 +1,4 @@
-"""OpenSpineToolbox kit (ostk) — reusable, tested primitives for building
+"""OpenSpineToolkit kit (ostk) — reusable, tested primitives for building
 spinopelvic measurements from CTSpinoPelvic1K masks. See SPEC.md."""
 from . import geometry, io, labels, masks, metrics, parallel, record, spine
 from .geometry import (WORLD_SUPERIOR, angle_between, cobb_angle, fit_plane_tls,

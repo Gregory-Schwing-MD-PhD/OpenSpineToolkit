@@ -1,6 +1,6 @@
 # Sagittal Vertical Axis (SVA)
 
-**Miniproject — OpenSpineToolbox**
+**Miniproject — OpenSpineToolkit**
 
 ## Goal
 Measure SVA: the horizontal offset between the C7/T1 plumb line and the

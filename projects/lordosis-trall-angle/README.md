@@ -1,6 +1,6 @@
 # Lordosis — TRALL Angle
 
-**Miniproject — OpenSpineToolbox**
+**Miniproject — OpenSpineToolkit**
 
 ## Goal
 Quantify lumbar lordosis (e.g. the TRALL / total & segmental lordotic angles)

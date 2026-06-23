@@ -1,6 +1,6 @@
 # Centroid Trajectory Analysis / Tortuosity
 
-**Miniproject — OpenSpineToolbox**
+**Miniproject — OpenSpineToolkit**
 
 ## Goal
 Trace the 3D trajectory of vertebral body centroids and quantify spinal

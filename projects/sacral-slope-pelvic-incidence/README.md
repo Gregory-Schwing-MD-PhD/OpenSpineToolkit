@@ -1,6 +1,6 @@
 # Sacral Slope / Pelvic Tilt / Pelvic Incidence
 
-**Miniproject — OpenSpineToolbox · Tier 1, build FIRST (highest clinical utility)**
+**Miniproject — OpenSpineToolkit · Tier 1, build FIRST (highest clinical utility)**
 
 Read the shared contract first: [`../../SPEC.md`](../../SPEC.md) (data, label ids,
 geometry primitives, output schema, the position/FOV golden rule).

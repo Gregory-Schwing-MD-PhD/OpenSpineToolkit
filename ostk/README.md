@@ -1,4 +1,4 @@
-# ostk — OpenSpineToolbox kit
+# ostk — OpenSpineToolkit kit
 
 Reusable, **tested** primitives for building spinopelvic measurements from
 CTSpinoPelvic1K masks. Functions are pure/stateless → reproducible (no RNG; fixed

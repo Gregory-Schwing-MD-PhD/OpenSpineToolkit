@@ -1,6 +1,6 @@
 # T1 Pelvic Angle (TPA)
 
-**Miniproject — OpenSpineToolbox**
+**Miniproject — OpenSpineToolkit**
 
 ## Goal
 Compute TPA: the angle between the line from the femoral head axis to the T1

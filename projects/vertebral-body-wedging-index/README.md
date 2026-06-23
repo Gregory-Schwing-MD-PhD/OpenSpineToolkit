@@ -1,6 +1,6 @@
 # Vertebral Body Wedging Index
 
-**Miniproject — OpenSpineToolbox**
+**Miniproject — OpenSpineToolkit**
 
 ## Goal
 Compute the wedging index (anterior vs posterior vertebral body height ratio) per

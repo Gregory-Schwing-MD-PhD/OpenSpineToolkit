@@ -1,4 +1,4 @@
-# OpenSpineToolbox
+# OpenSpineToolkit
 
 A shared collection of student miniprojects for spine & pelvis imaging analysis.
 Each miniproject lives in its own folder under [`projects/`](projects/) and is
@@ -76,10 +76,10 @@ technical contract. It defines:
 
 ## Step 1 — Fork the main repository
 
-1. Go to the main repo: <https://github.com/Gregory-Schwing-MD-PhD/OpenSpineToolbox>
+1. Go to the main repo: <https://github.com/Gregory-Schwing-MD-PhD/OpenSpineToolkit>
 2. Click **Fork** (top-right) → **Create fork**.
 3. You now have your own copy at
-   `https://github.com/<your-username>/OpenSpineToolbox`.
+   `https://github.com/<your-username>/OpenSpineToolkit`.
 
 ---
 
@@ -88,8 +88,8 @@ technical contract. It defines:
 Copy the URL of **your** fork (green **Code** button → HTTPS), then:
 
 ```bash
-git clone https://github.com/<your-username>/OpenSpineToolbox.git
-cd OpenSpineToolbox
+git clone https://github.com/<your-username>/OpenSpineToolkit.git
+cd OpenSpineToolkit
 ```
 
 Replace `<your-username>` with your actual GitHub username.
@@ -154,8 +154,8 @@ git push -u origin miniproject-<short-name>
    **"Compare & pull request"** — click it.
    (If you don't see it: **Pull requests** tab → **New pull request**.)
 2. Make sure the PR is set up as:
-   - **base repository:** `Gregory-Schwing-MD-PhD/OpenSpineToolbox`, **base:** `main`
-   - **head repository:** `<your-username>/OpenSpineToolbox`, **compare:**
+   - **base repository:** `Gregory-Schwing-MD-PhD/OpenSpineToolkit`, **base:** `main`
+   - **head repository:** `<your-username>/OpenSpineToolkit`, **compare:**
      `miniproject-<short-name>`
 3. Give it a clear title (e.g. *"Add Cobb angle miniproject"*) and a short
    description of what your project does.
@@ -186,7 +186,7 @@ git push
   **Personal Access Token** (not your password) when prompted. See Step 0.
 - **`Permission denied` / `403` on push.** You're trying to push to the *main*
   repo instead of *your fork*. Check `git remote -v` — `origin` must point at
-  `https://github.com/<your-username>/OpenSpineToolbox.git`.
+  `https://github.com/<your-username>/OpenSpineToolkit.git`.
 - **I accidentally committed to `main`.** Make your branch from where you are
   (`git checkout -b miniproject-<short-name>`) and push that; the PR will still
   work.
@@ -197,7 +197,7 @@ git push
 ## Repository layout
 
 ```
-OpenSpineToolbox/
+OpenSpineToolkit/
 ├── LICENSE
 ├── README.md            <- you are here
 └── projects/

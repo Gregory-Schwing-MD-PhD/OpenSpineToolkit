@@ -1,6 +1,6 @@
 # Scoliosis / Cobb Angle
 
-**Miniproject — OpenSpineToolbox**
+**Miniproject — OpenSpineToolkit**
 
 ## Goal
 Measure the coronal Cobb angle from the tilt of the end vertebrae of a curve.

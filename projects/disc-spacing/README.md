@@ -1,6 +1,6 @@
 # Disc Spacing
 
-**Miniproject — OpenSpineToolbox**
+**Miniproject — OpenSpineToolkit**
 
 ## Goal
 Estimate intervertebral disc height from the gap between adjacent vertebral
