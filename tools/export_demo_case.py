@@ -159,6 +159,20 @@ def _angle_entry(name, label, value, color, solid, dashed, arc, label_at, rule=N
     return d
 
 
+def _xform_geometry(obj, params):
+    """Carry a (pre-op) geometry tree onto the post-op spine by applying the bend to every
+    world-mm point in it (all 3-number lists in the geometry are world points). Pelvic
+    constructions below S1 are unmoved (θ=0); the lumbar LL construction rides the bend."""
+    if isinstance(obj, list):
+        if len(obj) == 3 and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in obj):
+            q = surgery.transform_world_points(np.asarray(obj, float), params)
+            return [round(float(v), 2) for v in q]
+        return [_xform_geometry(v, params) for v in obj]
+    if isinstance(obj, dict):
+        return {k: _xform_geometry(v, params) for k, v in obj.items()}
+    return obj
+
+
 def build_geometry(label, affine, endplate_rule=False):
     """Assemble the angle annotations (world mm) for whatever is computable.
     endplate_rule: when True, attach the Legaye "½+½" sacral-endplate midpoint
@@ -380,66 +394,107 @@ def process(args):
     # ones. Writes postop_{ct,seg}.nii.gz + a "postop" block in metrics.json (its own
     # construction geometry + summary + the plan). Self-contained — no raw CT needed.
     if getattr(args, "postop", False):
+        if not args.ct:
+            raise SystemExit("--postop needs --ct (the FULL-RES CT) for a crisp synthesis")
         cdir = os.path.join(args.out_dir, args.case_id)
-        seg_img = nib.load(os.path.join(cdir, "seg.nii.gz"))
-        segp = np.asanyarray(seg_img.dataobj).astype(np.int32)
-        aff = seg_img.affine
-        ct_img = nib.load(os.path.join(cdir, "ct.nii.gz"))
-        ctp = np.asanyarray(ct_img.dataobj)
+        seg_fr = seg                                     # full-res label (from --label)
+        ct_fr, _ = load_ct(args.ct)                      # full-res CT
+        if ct_fr.shape != seg_fr.shape:
+            raise SystemExit("CT and label grids differ; resample first")
+        demo = nib.load(os.path.join(cdir, "seg.nii.gz"))   # the shipped demo grid
+        A_demo, demo_shape = demo.affine, demo.shape
 
-        # baseline = the FULL-RES headline summary already in metrics.json, so PI (which
-        # is posture-invariant) and the pre-op LL match exactly across the pre/post
-        # toggle (recomputing on the cropped/downsampled seg would shift them ~1-2°).
         meta0 = json.load(open(os.path.join(cdir, "metrics.json"), encoding="utf-8"))
-        base = meta0.get("summary") or metrics.spinopelvic_summary_from_label(segp, aff, case_id=args.case_id)
-        delta = args.postop_delta
-        if delta <= 0:                                   # default: the recommended ΔLL
-            delta = float((base.get("surgery") or {}).get("ll_to_restore_deg") or 10.0)
+        base = meta0.get("summary") or metrics.spinopelvic_summary_from_label(seg_fr, laff, case_id=args.case_id)
+        base_geom = meta0.get("geometry")
+        demo_seg = np.asanyarray(demo.dataobj).astype(np.int32)
         level, tech = args.postop_level, args.postop_technique
 
-        # Smooth DISTRIBUTED bend (no single-level kink, no gaps): the SAME field warps
-        # the label (order 0) and the CT (order 1) so they stay registered. The bend is
-        # an exact geometric transform; the post-op ANGLES are still derived ANALYTICALLY
-        # from the full-res baseline (LL += ΔLL, PI invariant, pelvis compensated), since
-        # re-measuring the downsampled, warped label is unreliable.
-        postop_seg = surgery.bend_spine(segp, aff, delta, label_for_axes=segp, order=0)
-        postop_ct = surgery.bend_spine(ctp, aff, delta, label_for_axes=segp, order=1,
-                                       cval=float(ctp.min()))
-        pgeom = build_geometry(postop_seg, aff, endplate_rule=args.endplate_rule)
+        # Biomechanically-grounded PLAN: Lafage age-adjusted targets set how much lordosis
+        # to add (won't over-flatten an older spine), with a reciprocal thoracic estimate.
+        plan = surgery.plan_realignment(base, args.postop_age,
+                                        reciprocal_k=args.postop_reciprocal_k)
+        if args.postop_delta > 0:                         # manual ΔLL override
+            plan["delta_ll"] = args.postop_delta
+            plan["delta_tk"] = round(args.postop_reciprocal_k * args.postop_delta, 2)
+        d_ll, d_tk, antev = plan["delta_ll"], plan["delta_tk"], plan["pelvic_antevert"]
 
-        PI = base.get("PI")
-        LL_post = round(base["LL"] + abs(delta), 1) if base.get("LL") is not None else None
+        # World-space bend params, derived ONCE on the fast/accurate coarse demo seg. NO
+        # global pelvic rotation in the IMAGE (supine pelvis stays put, so overlay == image);
+        # the pelvic compensation is reported analytically below as a standing prediction.
+        params = surgery.bend_params(demo_seg, A_demo, delta_ll=d_ll, delta_tk=d_tk,
+                                     pelvic_antevert=0.0)
+        if params is None:
+            raise SystemExit("bend_params failed (missing L1/S1/lumbar in demo seg)")
+
+        # IMAGE: lumbar lordosis + RECIPROCAL thoracic kyphosis (unfused thorax flexes, not
+        # carried rigidly), full-res warped onto the demo grid — fast (params precomputed).
+        postop_seg = surgery.synthesize_postop(seg_fr, laff, params=params, order=0,
+                                               out_affine=A_demo, out_shape=demo_shape)
+        postop_ct = surgery.synthesize_postop(ct_fr, laff, params=params, order=1,
+                                              out_affine=A_demo, out_shape=demo_shape,
+                                              cval=float(ct_fr.min()))
+        if args.mask_bone:
+            from scipy import ndimage
+            keep = ndimage.binary_dilation(postop_seg > 0, iterations=args.bone_dilate)
+            postop_ct = np.where(keep, postop_ct, -1000).astype(np.int16)
+
+        # NUMBERS — ANALYTIC carry-forward (re-measuring the resampled image is unreliable:
+        # the rotation roughens thin endplates and the fit collapses). PI is intrinsic and
+        # invariant; LL rises by exactly the applied ΔLL; the supine pelvis is unchanged.
         psum = dict(base)
-        if PI is not None and LL_post is not None:
-            psum["LL"] = LL_post
-            psum["PI-LL"] = metrics.pi_ll_mismatch(PI, LL_post)
-            comp = surgery.predict_compensated_alignment(PI, base["PT"]) if base.get("PT") is not None else None
-            pt_post = comp["PT"] if comp else base.get("PT")
-            if comp:
-                psum["PT"], psum["SS"] = comp["PT"], comp["SS"]
-                psum["PT_standing"], psum["SS_standing"] = comp["PT"], comp["SS"]
-                psum["pelvic_rotation_deg"] = comp["pelvic_rotation_deg"]
-            psum["schwab"] = metrics.schwab_sagittal_modifiers(PI, LL_post, pt_post or 0.0)
-            psum["surgery"] = metrics.surgical_recommendation(PI, LL_post, pt_post or 0.0)
-            # show the analytic numbers on the drawn constructions too
-            for a in pgeom["angles"]:
-                a["value"] = {"PI": PI, "SS": psum.get("SS"), "PT": psum.get("PT"),
-                              "LL": LL_post}.get(a["id"], a["value"])
+        if base.get("LL") is not None:
+            psum["LL"] = round(base["LL"] + d_ll, 1)
+            if base.get("PI") is not None:
+                psum["PI-LL"] = metrics.pi_ll_mismatch(base["PI"], psum["LL"])
+        psum["reciprocal_tk_deg"] = d_tk
+        psum["age"] = args.postop_age
+        psum["targets"] = plan["targets"]
+        if base.get("PI") is not None and base.get("PT") is not None:   # predicted standing
+            comp = surgery.predict_compensated_alignment(
+                base["PI"], base["PT"], target_pt=plan["targets"].get("PT", 20.0))
+            psum["PT_compensated"], psum["SS_compensated"] = comp["PT"], comp["SS"]
 
-        nib.save(nib.Nifti1Image(postop_seg.astype(np.int16), aff),
+        # OVERLAY — carry the CLEAN pre-op construction forward by the SAME bend (no re-fit
+        # of the rough image): pelvic constructions are unmoved (θ=0), the LL construction
+        # rides the lumbar bend. Then stamp the analytic post-op LL value on it.
+        if base_geom:
+            pgeom = _xform_geometry(base_geom, params)
+            for a in pgeom.get("angles", []):
+                if a["id"] == "LL" and psum.get("LL") is not None:
+                    a["value"] = psum["LL"]
+        else:
+            pgeom = build_geometry(postop_seg, A_demo, endplate_rule=args.endplate_rule)
+
+        # Surgical hardware: an interbody CAGE in each operated disc (ALIF/LLIF — NO
+        # vertebral body is resected; that is PSO only).
+        chain = ["L1", "L2", "L3", "L4", "L5", "L6", "S1"]
+        present = set(int(v) for v in np.unique(seg_fr)) - {0}
+        seg_names = [n for n in chain if surgery.LABELS.get(n) in present]
+        disc_pairs = list(zip(seg_names, seg_names[1:]))
+        if tech.lower() in ("alif", "llif", "tlif", "interbody", "acr") and disc_pairs:
+            postop_seg, postop_ct = surgery.place_interbody_cages(
+                postop_seg, postop_ct, A_demo, disc_pairs)
+        level_span = f"{seg_names[0]}–{seg_names[-1]}" if seg_names else level
+
+        nib.save(nib.Nifti1Image(postop_seg.astype(np.int16), A_demo),
                  os.path.join(cdir, "postop_seg.nii.gz"))
-        nib.save(nib.Nifti1Image(postop_ct.astype(np.int16), aff),
+        nib.save(nib.Nifti1Image(postop_ct.astype(np.int16), A_demo),
                  os.path.join(cdir, "postop_ct.nii.gz"))
         mpath = os.path.join(cdir, "metrics.json")
         meta = json.load(open(mpath, encoding="utf-8"))
         meta["postop"] = {"summary": psum, "geometry": pgeom, "preop_summary": base,
                           "files": {"ct": "postop_ct.nii.gz", "seg": "postop_seg.nii.gz"},
-                          "plan": {"level": level, "technique": tech,
-                                   "delta_deg": round(float(delta), 1)}}
+                          "plan": {"level": level, "level_span": level_span, "technique": tech,
+                                   "cage_levels": len(disc_pairs), "body_resected": False,
+                                   "delta_deg": round(float(d_ll), 1),
+                                   "reciprocal_tk_deg": d_tk, "pelvic_antevert_deg": antev,
+                                   "age": args.postop_age, "targets": plan["targets"]}}
         json.dump(meta, open(mpath, "w", encoding="utf-8"), indent=2, default=_jdef)
-        print(f"[{args.case_id}] postop {tech} {level} dLL~{delta:.1f}deg -> "
-              f"LL {base.get('LL')}->{psum.get('LL')}  PI-LL "
-              f"{base.get('PI-LL',{}).get('pi_minus_ll')}->{psum.get('PI-LL',{}).get('pi_minus_ll')}")
+        print(f"[{args.case_id}] postop {tech} {level_span} age{args.postop_age:.0f} "
+              f"dLL~{d_ll:.1f} dTK~{d_tk:.1f} antev~{antev:.1f} -> "
+              f"LL {base.get('LL')}->{psum.get('LL')} PT {base.get('PT')}->{psum.get('PT')} "
+              f"PI-LL {base.get('PI-LL',{}).get('pi_minus_ll')}->{psum.get('PI-LL',{}).get('pi_minus_ll')}")
         return
 
     ct = caff = None
@@ -541,7 +596,11 @@ def main(argv=None):
     p.add_argument("--postop-level", default="L4", help="operative level (lowest mobile)")
     p.add_argument("--postop-technique", default="alif", help="alif/llif/tlif/acr/spo/pso")
     p.add_argument("--postop-delta", type=float, default=0.0,
-                   help="ΔLL degrees to add; <=0 uses the recommended ll_to_restore")
+                   help="ΔLL degrees to add; <=0 uses the age-adjusted target")
+    p.add_argument("--postop-age", type=float, default=60.0,
+                   help="patient age for Lafage age-adjusted alignment targets")
+    p.add_argument("--postop-reciprocal-k", type=float, default=0.5,
+                   help="reciprocal thoracic ratio ΔTK/ΔLL (literature 0.34–0.58)")
     process(p.parse_args(argv))
     return 0
 

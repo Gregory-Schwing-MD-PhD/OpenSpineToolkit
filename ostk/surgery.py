@@ -293,7 +293,7 @@ def warp_ct(ct, label, affine, level: str, delta_deg: float, *,
 
 def bend_spine(volume, affine, total_delta_deg, *, label_for_axes=None,
                sup_axis=WORLD_SUPERIOR, lr_axis=None, order=1, cval=None,
-               z_lo_name="S1", z_hi_name="L1"):
+               z_lo_name="S1", z_hi_name="L1", out_affine=None, out_shape=None):
     """Smooth, DISTRIBUTED lordosis correction (the natural-looking synthesis).
 
     Instead of pivoting the whole upper spine about one disc (a sharp kink), the
@@ -304,9 +304,15 @@ def bend_spine(volume, affine, total_delta_deg, *, label_for_axes=None,
     SAME call to the label (order=0) and the CT (order=1) so they stay registered.
 
     `label_for_axes` supplies the segmentation when `volume` is the CT. Pelvis (below S1)
-    is untouched, so PI is invariant; the thoracic above L1 is carried rigidly."""
+    is untouched, so PI is invariant; the thoracic above L1 is carried rigidly.
+
+    `out_affine`/`out_shape`: warp a FULL-RES `volume` directly onto a different (e.g.
+    downsampled demo) output grid in one resample — memory-light (the grid is the small
+    output), so the post-op is generated from full-res but ships at demo resolution."""
     from scipy import ndimage
     vol = np.asarray(volume)
+    out_aff = np.asarray(out_affine, float) if out_affine is not None else None
+    out_sh = tuple(out_shape) if out_shape is not None else None
     lab = np.asarray(label_for_axes if label_for_axes is not None else volume)
     A = np.asarray(affine, float)
     lr = unit(lr_axis) if lr_axis is not None else _lr_axis(lab, affine, sup_axis)
@@ -349,10 +355,12 @@ def bend_spine(volume, affine, total_delta_deg, *, label_for_axes=None,
         pass
     total = sgn * np.deg2rad(total_delta_deg)
 
-    sh = vol.shape
-    grid = np.stack(np.meshgrid(np.arange(sh[0]), np.arange(sh[1]),
-                                np.arange(sh[2]), indexing="ij"), -1).astype(np.float32)
-    world = grid @ A[:3, :3].T.astype(np.float32) + A[:3, 3].astype(np.float32)
+    # output grid (default = input grid; or a separate demo grid for full-res→demo warp)
+    gsh = out_sh if out_sh is not None else vol.shape
+    gaff = out_aff if out_aff is not None else A
+    grid = np.stack(np.meshgrid(np.arange(gsh[0]), np.arange(gsh[1]),
+                                np.arange(gsh[2]), indexing="ij"), -1).astype(np.float32)
+    world = grid @ gaff[:3, :3].T.astype(np.float32) + gaff[:3, 3].astype(np.float32)
     h = world @ sup_s.astype(np.float32)
     t = np.clip((h - z_lo) / (z_hi - z_lo), 0.0, 1.0)
     theta = (total * (t * t * (3.0 - 2.0 * t))).astype(np.float32)   # smoothstep ramp
@@ -369,6 +377,198 @@ def bend_spine(volume, affine, total_delta_deg, *, label_for_axes=None,
     if cval is None:
         cval = float(vol.min())
     out = ndimage.map_coordinates(vol, [src_vox[..., 0], src_vox[..., 1], src_vox[..., 2]],
+                                  order=order, mode="constant", cval=cval)
+    return out.astype(vol.dtype)
+
+
+def age_adjusted_targets(pi: float, age: float) -> dict:
+    """Lafage age-adjusted ideal sagittal alignment (Lafage et al., Spine 2016) — the
+    'ideal' loosens with age, so a correction won't over-flatten an older spine (a known
+    driver of proximal junctional kyphosis). PI−LL=(age−55)/2+3, PT=(age−55)/3+20,
+    SVA=2(age−55)+25 mm; target LL = PI − (age-adjusted PI−LL)."""
+    pill = (age - 55.0) / 2.0 + 3.0
+    pt = (age - 55.0) / 3.0 + 20.0
+    sva = 2.0 * (age - 55.0) + 25.0
+    return {"PI-LL": round(pill, 1), "PT": round(pt, 1), "SVA_mm": round(sva, 1),
+            "LL": round(pi - pill, 1)}
+
+
+def plan_realignment(summary: dict, age: float, *, reciprocal_k: float = 0.5) -> dict:
+    """Turn pre-op PI/LL/PT + age into a biomechanically-grounded correction:
+      • ΔLL to reach the age-adjusted LL target (Lafage);
+      • reciprocal thoracic ΔTK ≈ k·ΔLL (literature 0.34–0.58·ΔPI−LL; flexible ~0.58);
+      • pelvic anteversion to release retroversion toward the age-adjusted PT.
+    Returns the deltas + the age-adjusted target dict."""
+    pi, ll, pt = summary.get("PI"), summary.get("LL"), summary.get("PT")
+    tgt = age_adjusted_targets(pi, age)
+    d_ll = max(0.0, round(tgt["LL"] - ll, 2)) if (pi is not None and ll is not None) else 0.0
+    d_tk = round(reciprocal_k * d_ll, 2)
+    antevert = max(0.0, round(pt - tgt["PT"], 2)) if pt is not None else 0.0
+    return {"delta_ll": d_ll, "delta_tk": d_tk, "pelvic_antevert": antevert,
+            "reciprocal_k": reciprocal_k, "age": age, "targets": tgt}
+
+
+def _rodrigues(d, lr, angle):
+    """Rotate vectors d (…,3) about unit axis lr by `angle` (scalar OR per-voxel array)."""
+    ca, sa = np.cos(angle), np.sin(angle)
+    if np.ndim(ca) == 0:
+        ca_, sa_, cc = float(ca), float(sa), 1.0 - float(ca)
+    else:
+        ca_, sa_, cc = ca[..., None], sa[..., None], (1.0 - ca)[..., None]
+    dxl = np.cross(np.broadcast_to(lr, d.shape), d)
+    ddl = (d @ lr)[..., None]
+    return d * ca_ + dxl * sa_ + lr * ddl * cc
+
+
+def place_interbody_cages(label, ct, affine, disc_pairs, *, cage_id=CAGE_ID,
+                          cage_hu=350.0, gap_iters=3):
+    """Render an interbody CAGE in each operated disc — the surgical hardware of an
+    ALIF/LLIF/TLIF/ACR (anterior/lateral interbody fusion); NO vertebral body is
+    resected (that is PSO only). The disc space is the thin gap between two adjacent
+    vertebra masks (their dilated overlap); we fill it with a cage label + a bright-ish
+    implant HU so the post-op CT shows a device at every fused level. Returns
+    (label, ct) copies. `disc_pairs` = [(upper, lower), …] cranial→caudal."""
+    from scipy import ndimage
+    lab = np.asarray(label).copy()
+    im = np.asarray(ct).copy()
+    for up, lo in disc_pairs:
+        if up not in LABELS or lo not in LABELS:
+            continue
+        um, lm = lab == LABELS[up], lab == LABELS[lo]
+        if not um.any() or not lm.any():
+            continue
+        disc = (ndimage.binary_dilation(um, iterations=gap_iters)
+                & ndimage.binary_dilation(lm, iterations=gap_iters) & (lab == 0))
+        lab[disc] = cage_id
+        im[disc] = cage_hu
+    return lab, im
+
+
+def bend_params(label, affine, *, delta_ll, delta_tk=0.0, pelvic_antevert=0.0,
+                sup_axis=WORLD_SUPERIOR, lr_axis=None):
+    """Compute the WORLD-SPACE parameters of the post-op bend ONCE (L–R axis, lumbosacral
+    fulcrum, height anchors, signed angle ramp, pelvic hinge). They are in mm and grid-
+    independent, so derive them on a fast COARSE segmentation and reuse them for both the
+    full-res image warp (`synthesize_postop`) and the analytic overlay/number carry-forward
+    (`transform_world_points`). Returns a dict, or None if the span anchors are missing."""
+    lab = np.asarray(label)
+    A = np.asarray(affine, float)
+    lr = unit(lr_axis) if lr_axis is not None else _lr_axis(lab, affine, sup_axis)
+    sup_s = unit(project_out(sup_axis, lr))
+
+    def _w(ids):
+        m = np.isin(lab, ids)
+        return (np.argwhere(m) @ A[:3, :3].T + A[:3, 3]) if m.any() else None
+    s1w, l1w = _w([LABELS["S1"]]), _w([LABELS["L1"]])
+    lumw = _w([LABELS[n] for n in ("L1", "L2", "L3", "L4", "L5", "L6", "S1") if n in LABELS])
+    tw = _w([LABELS[f"T{n}"] for n in range(1, 14) if f"T{n}" in LABELS])
+    if s1w is None or l1w is None or lumw is None:
+        return None
+    z_s1 = float((s1w @ sup_s).max())
+    z_l1 = float((l1w @ sup_s).max())
+    z_tt = float((tw @ sup_s).max()) if tw is not None else z_l1 + (z_l1 - z_s1)
+
+    ant = unit(project_out(np.array([0.0, 1.0, 0.0]), lr))
+    if ant[1] < 0:
+        ant = -ant
+    c = lumw.mean(0)
+    F_lum = (c - ((c - s1w.mean(0)) @ sup_s) * sup_s
+             - (float((lumw @ ant).max()) - float(c @ ant)) * ant)
+
+    # extension sign (adds lordosis); thoracic flexion is the opposite cumulative sense
+    sgn = 1.0
+    try:
+        from .spine import endplate_from_label
+        _, n1, _ = endplate_from_label(lab, affine, "L1", "superior", normal_axis=sup_axis)
+        _, n7, _ = endplate_from_label(lab, affine, "S1", "superior", normal_axis=sup_axis)
+        if cobb_angle(rotation_matrix(lr, 0.05) @ n1, n7, lr) < \
+           cobb_angle(rotation_matrix(lr, -0.05) @ n1, n7, lr):
+            sgn = -1.0
+    except Exception:
+        pass
+    zs = np.array([z_s1, z_l1, max(z_tt, z_l1 + 1.0)], dtype=float)
+    ang = sgn * np.deg2rad(np.array([0.0, delta_ll, delta_ll - delta_tk], dtype=float))
+
+    # global pelvic anteversion about the femoral-head axis (sign reduces PT)
+    F_hip, a_pelvis = None, 0.0
+    if pelvic_antevert:
+        try:
+            from .metrics import femoral_head_center
+            from .spine import endplate_overmask_midpoint_from_label
+            L = femoral_head_center(lab, affine, "femur_left", "left_hip", sup_axis=sup_axis)
+            R = femoral_head_center(lab, affine, "femur_right", "right_hip", sup_axis=sup_axis)
+            m = endplate_overmask_midpoint_from_label(lab, affine, "S1", sup_axis, "superior")
+            if L is not None and R is not None and m is not None:
+                F_hip = 0.5 * (L[0] + R[0])
+                r = np.asarray(m, float) - F_hip
+                th = np.deg2rad(pelvic_antevert)
+                pp = angle_between(project_out(rotation_matrix(lr, th) @ r, lr), sup_s)
+                pm = angle_between(project_out(rotation_matrix(lr, -th) @ r, lr), sup_s)
+                a_pelvis = -th if pm < pp else th       # whichever lowers PT
+        except Exception:
+            F_hip = None
+    return {"lr": lr, "sup_s": sup_s, "F_lum": F_lum, "zs": zs, "ang": ang,
+            "F_hip": F_hip, "a_pelvis": a_pelvis, "z_s1": z_s1, "z_l1": z_l1,
+            "z_tt": z_tt, "sgn": float(sgn)}
+
+
+def transform_world_points(points, params):
+    """FORWARD post-op transform of world-mm points (pre-op → post-op): bend each point by
+    +θ about the lumbosacral fulcrum (θ from its source height) then antevert by the pelvic
+    hinge. This carries the CLEAN pre-op construction overlay onto the post-op spine without
+    re-fitting the resampled (slightly rough) image. Accepts a single point or an (N,3)."""
+    p = np.asarray(points, float)
+    single = p.ndim == 1
+    p = np.atleast_2d(p)
+    lr, sup_s, F_lum = params["lr"], params["sup_s"], params["F_lum"]
+    theta = np.interp(p @ sup_s, params["zs"], params["ang"])
+    q = F_lum + _rodrigues(p - F_lum, lr, theta)
+    if params.get("F_hip") is not None and params.get("a_pelvis"):
+        q = params["F_hip"] + _rodrigues(q - params["F_hip"], lr, params["a_pelvis"])
+    return q[0] if single else q
+
+
+def synthesize_postop(volume, affine, *, params=None, delta_ll=None, delta_tk=0.0,
+                      pelvic_antevert=0.0, label_for_axes=None, sup_axis=WORLD_SUPERIOR,
+                      lr_axis=None, order=1, cval=None, out_affine=None, out_shape=None):
+    """Biomechanically-grounded post-op IMAGE synthesis (Phase 4). ONE composite field:
+    lumbar lordosis (0→ΔLL over S1→L1) + reciprocal thoracic kyphosis (ΔLL→ΔLL−ΔTK over
+    L1→top-thoracic) + optional global pelvic anteversion. Same field warps the label
+    (order 0) and CT (order 1); `out_affine`/`out_shape` warp a full-res input onto a
+    (downsampled) demo grid. Pass `params` from `bend_params` (computed on a coarse seg) to
+    skip the slow full-res axis derivation. NOTE: re-measuring the resampled output is
+    unreliable (rough endplates) — carry numbers/overlay via `transform_world_points`."""
+    from scipy import ndimage
+    vol = np.asarray(volume)
+    A = np.asarray(affine, float)
+    if params is None:
+        params = bend_params(label_for_axes if label_for_axes is not None else volume, affine,
+                             delta_ll=delta_ll, delta_tk=delta_tk,
+                             pelvic_antevert=pelvic_antevert, sup_axis=sup_axis, lr_axis=lr_axis)
+    if params is None:
+        return vol
+    lr = params["lr"].astype(np.float32)
+    sup_s = params["sup_s"].astype(np.float32)
+    F_lum = params["F_lum"].astype(np.float32)
+    zs, ang = params["zs"], params["ang"]
+    F_hip, a_pelvis = params["F_hip"], params["a_pelvis"]
+
+    gsh = tuple(out_shape) if out_shape is not None else vol.shape
+    gaff = np.asarray(out_affine, float) if out_affine is not None else A
+    grid = np.stack(np.meshgrid(np.arange(gsh[0]), np.arange(gsh[1]),
+                                np.arange(gsh[2]), indexing="ij"), -1).astype(np.float32)
+    world = grid @ gaff[:3, :3].T.astype(np.float32) + gaff[:3, 3].astype(np.float32)
+    Y1 = world
+    if F_hip is not None and a_pelvis:                  # undo global pelvic rotation
+        Y1 = F_hip.astype(np.float32) + _rodrigues(world - F_hip.astype(np.float32), lr, -a_pelvis)
+    h = Y1 @ sup_s                                       # undo the bend (per-height angle)
+    theta = np.interp(h, zs, ang).astype(np.float32)
+    src = F_lum + _rodrigues(Y1 - F_lum, lr, -theta)
+    invA = np.linalg.inv(A)
+    sv = src @ invA[:3, :3].T.astype(np.float32) + invA[:3, 3].astype(np.float32)
+    if cval is None:
+        cval = float(vol.min())
+    out = ndimage.map_coordinates(vol, [sv[..., 0], sv[..., 1], sv[..., 2]],
                                   order=order, mode="constant", cval=cval)
     return out.astype(vol.dtype)
 

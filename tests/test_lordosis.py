@@ -329,3 +329,55 @@ def test_warp_ct_bone_follows_labels_and_cage():
     s1 = label == 7
     assert abs(warped[s1].mean() - ct[s1].mean()) < 40.0        # fixed S1 bone unmoved
     assert int((warped[post == surgery.CAGE_ID] == 250.0).sum()) > 0   # cage stamped
+
+
+def test_age_adjusted_targets_lafage():
+    """Phase-4: Lafage age-adjusted ideals — at the 55-yr anchor PI−LL=3, PT=20,
+    SVA=25 mm; the ideal LOOSENS with age (older → larger PI−LL, PT, SVA)."""
+    from ostk import surgery
+    a55 = surgery.age_adjusted_targets(pi=55.0, age=55.0)
+    assert a55["PI-LL"] == 3.0 and a55["PT"] == 20.0 and a55["SVA_mm"] == 25.0
+    assert a55["LL"] == 52.0                                    # PI − (PI−LL)
+    young, old = surgery.age_adjusted_targets(55.0, 35.0), surgery.age_adjusted_targets(55.0, 75.0)
+    assert young["PI-LL"] < a55["PI-LL"] < old["PI-LL"]        # loosens with age
+    assert young["PT"] < old["PT"] and young["SVA_mm"] < old["SVA_mm"]
+
+
+def test_plan_realignment_from_age():
+    """Phase-4 plan: ΔLL reaches the age-adjusted LL target, ΔTK is the reciprocal
+    fraction of ΔLL, anteversion releases retroversion toward the target PT (≥0)."""
+    from ostk import surgery
+    summ = {"PI": 60.0, "LL": 40.0, "PT": 28.0}
+    plan = surgery.plan_realignment(summ, age=50.0, reciprocal_k=0.5)
+    tgt = plan["targets"]
+    assert abs(plan["delta_ll"] - (tgt["LL"] - 40.0)) < 1e-6   # to the age target
+    assert abs(plan["delta_tk"] - 0.5 * plan["delta_ll"]) < 1e-6
+    assert plan["pelvic_antevert"] == round(28.0 - tgt["PT"], 2) >= 0
+    # already-flat spine: never ask for negative lordosis
+    flat = surgery.plan_realignment({"PI": 60.0, "LL": 70.0, "PT": 15.0}, age=50.0)
+    assert flat["delta_ll"] == 0.0 and flat["pelvic_antevert"] == 0.0
+
+
+def test_synthesize_postop_reciprocal_and_global():
+    """Phase-4 synthesis: lumbar lordosis is restored (LL += ~ΔLL) with PI invariant, and
+    a global anteversion drives PT DOWN — one finite field for label + CT. (The phantom's
+    femur balls sit slightly off the fitted bicoxofemoral axis, so a large anteversion
+    perturbs the re-fit; real spherical heads lie on the axis, so a modest angle here
+    keeps the rigid-rotation invariants without that artifact.)"""
+    from ostk import surgery
+    label, A = _phantom_spine(), np.eye(4)
+    pre = metrics.spinopelvic_summary_from_label(label, A)
+    out = surgery.synthesize_postop(label, A, label_for_axes=label, order=0,
+                                    delta_ll=12.0, delta_tk=6.0, pelvic_antevert=0.0)
+    assert out.shape == label.shape and np.all(np.isfinite(out))
+    post = metrics.spinopelvic_summary_from_label(out, A)
+    assert post["LL"] > pre["LL"] + 4.0                        # lordosis added
+    assert abs(post["PI"] - pre["PI"]) < 4.0                   # PI invariant (intrinsic)
+    g = metrics.spinopelvic_summary_from_label(
+        surgery.synthesize_postop(label, A, label_for_axes=label, order=0,
+                                  delta_ll=12.0, delta_tk=6.0, pelvic_antevert=3.0), A)
+    assert g["PT"] < post["PT"] - 0.5                          # anteversion released PT
+    # cross-grid warp: out_shape/out_affine produce that grid
+    small = surgery.synthesize_postop(label, A, label_for_axes=label, order=0, delta_ll=12.0,
+                                      out_affine=np.diag([2., 2., 2., 1.]), out_shape=(48, 48, 48))
+    assert small.shape == (48, 48, 48) and np.all(np.isfinite(small))
