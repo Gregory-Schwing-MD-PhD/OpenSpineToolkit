@@ -217,3 +217,41 @@ def test_lumbar_lordosis_from_label_phantom_plumbing():
     assert m.value is not None and 5.0 < m.value < 80.0        # plausible, lordotic
     segs = m.landmarks_world_mm["per_segment_lordosis_deg"]
     assert len(segs) == len(metrics.LL_ENDPLATE_CHAIN) - 1
+
+
+def _phantom_spine(D=96):
+    """Femurs (-> L-R axis) + lordotic L1..S1 bodies on an identity grid."""
+    from ostk.labels import lid
+    ijk = np.argwhere(np.ones((D, D, D), dtype=bool)).astype(float)
+    label = np.zeros((D, D, D), dtype=np.int32)
+    flat = label.reshape(-1)
+    flat[_ball(ijk, np.array([22.0, 48.0, 22.0]), 13.0)] = lid("femur_left")
+    flat[_ball(ijk, np.array([74.0, 48.0, 22.0]), 13.0)] = lid("femur_right")
+    tilts = np.linspace(12.0, -18.0, len(metrics.LL_ENDPLATE_CHAIN))
+    zs = np.linspace(80.0, 40.0, len(metrics.LL_ENDPLATE_CHAIN))
+    for lv, t, z in zip(metrics.LL_ENDPLATE_CHAIN, tilts, zs):
+        a = np.deg2rad(t)
+        normal = np.array([0.0, np.sin(a), np.cos(a)])
+        flat[_body(ijk, np.array([48.0, 48.0, z]), normal)] = lid(lv)
+    return label
+
+
+def test_simulate_correction_adds_lordosis_pelvis_fixed():
+    """Phase-1 post-op synthesis: rotating the segment at/above L3 by Δ° must raise
+    the re-measured LL by ~Δ while the pelvis (PI/SS/PT) is untouched — so PI−LL
+    (the surgical target) improves by ~Δ."""
+    from ostk import surgery
+    label, A = _phantom_spine(), np.eye(4)
+    pre = metrics.spinopelvic_summary_from_label(label, A, case_id="pre")
+    assert pre["LL"] is not None and pre["PI"] is not None
+
+    DELTA = 12.0
+    out = surgery.simulate_correction(label, A, "L3", DELTA)
+    post = metrics.spinopelvic_summary_from_label(out, A, case_id="post")
+
+    assert abs((post["LL"] - pre["LL"]) - DELTA) < 3.0          # LL += Δ
+    assert abs(post["PI"] - pre["PI"]) < 1.0                    # pelvis fixed
+    assert abs(post["SS"] - pre["SS"]) < 1.0
+    assert abs(post["PT"] - pre["PT"]) < 1.0
+    improved = pre["PI-LL"]["pi_minus_ll"] - post["PI-LL"]["pi_minus_ll"]
+    assert improved > DELTA - 3.0                               # PI−LL closes by ~Δ

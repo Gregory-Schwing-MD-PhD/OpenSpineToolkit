@@ -127,3 +127,18 @@ def cobb_angle(normal_a, normal_b, view_normal) -> float:
     b = unit(project_out(normal_b, view_normal))
     cos = abs(float(np.clip(a @ b, -1.0, 1.0)))
     return float(np.degrees(np.arccos(cos)))
+
+
+def rotation_matrix(axis, theta_rad: float) -> np.ndarray:
+    """3×3 rotation by `theta_rad` about `axis` (right-hand rule), via Rodrigues.
+    Used to rotate a mobile spinal segment about the patient L–R axis when
+    synthesising a post-osteotomy correction (see ostk.surgery)."""
+    a = unit(axis)
+    x, y, z = a
+    c, s = float(np.cos(theta_rad)), float(np.sin(theta_rad))
+    C = 1.0 - c
+    return np.array([
+        [c + x * x * C,     x * y * C - z * s, x * z * C + y * s],
+        [y * x * C + z * s, c + y * y * C,     y * z * C - x * s],
+        [z * x * C - y * s, z * y * C + x * s, c + z * z * C],
+    ])
