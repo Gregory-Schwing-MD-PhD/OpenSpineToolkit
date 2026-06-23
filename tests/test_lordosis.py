@@ -301,6 +301,19 @@ def test_compensate_pelvis_voxel_releases_retroversion():
     assert np.array_equal(same, label)                          # no-op guard
 
 
+def test_bend_spine_smooth_correction():
+    """Phase-3 distributed bend: a graduated extension adds lordosis smoothly (no kink),
+    leaves the pelvis ~fixed, and stays finite — same field applies to label and CT."""
+    from ostk import surgery
+    label, A = _phantom_spine(), np.eye(4)
+    pre = metrics.spinopelvic_summary_from_label(label, A)
+    bent = surgery.bend_spine(label, A, 12.0, label_for_axes=label, order=0)
+    assert bent.shape == label.shape and np.all(np.isfinite(bent))
+    post = metrics.spinopelvic_summary_from_label(bent, A)
+    assert post["LL"] > pre["LL"] + 4.0           # lordosis added (distributed)
+    assert abs(post["PI"] - pre["PI"]) < 3.0      # pelvis ~fixed (below S1)
+
+
 def test_warp_ct_bone_follows_labels_and_cage():
     """Phase-3: the warped CT carries bone HU into the rotated mobile-vertebra labels,
     leaves the fixed pelvis bone in place, stays finite, and stamps the cage."""

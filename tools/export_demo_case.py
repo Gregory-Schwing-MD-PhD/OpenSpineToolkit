@@ -397,15 +397,14 @@ def process(args):
             delta = float((base.get("surgery") or {}).get("ll_to_restore_deg") or 10.0)
         level, tech = args.postop_level, args.postop_technique
 
-        # The rotation + CT warp are exact geometric transforms, but RE-MEASURING the
-        # rotated, downsampled demo label is unreliable (resampling degrades the thin
-        # endplate fits). So the post-op ANGLES are derived ANALYTICALLY from the pre-op
-        # baseline + the applied correction (LL += ΔLL, PI invariant, pelvis compensated),
-        # which is exact; the warped image + rotated construction are for visualisation
-        # (the displayed angle values are overridden to the analytic numbers).
-        postop_seg = surgery.simulate_correction(segp, aff, level, delta, technique=tech)
-        postop_ct = surgery.warp_ct(ctp, segp, aff, level, delta, technique=tech,
-                                    postop_label=postop_seg)
+        # Smooth DISTRIBUTED bend (no single-level kink, no gaps): the SAME field warps
+        # the label (order 0) and the CT (order 1) so they stay registered. The bend is
+        # an exact geometric transform; the post-op ANGLES are still derived ANALYTICALLY
+        # from the full-res baseline (LL += ΔLL, PI invariant, pelvis compensated), since
+        # re-measuring the downsampled, warped label is unreliable.
+        postop_seg = surgery.bend_spine(segp, aff, delta, label_for_axes=segp, order=0)
+        postop_ct = surgery.bend_spine(ctp, aff, delta, label_for_axes=segp, order=1,
+                                       cval=float(ctp.min()))
         pgeom = build_geometry(postop_seg, aff, endplate_rule=args.endplate_rule)
 
         PI = base.get("PI")

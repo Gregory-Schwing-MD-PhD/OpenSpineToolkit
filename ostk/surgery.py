@@ -291,6 +291,88 @@ def warp_ct(ct, label, affine, level: str, delta_deg: float, *,
     return warped.astype(ct.dtype)
 
 
+def bend_spine(volume, affine, total_delta_deg, *, label_for_axes=None,
+               sup_axis=WORLD_SUPERIOR, lr_axis=None, order=1, cval=None,
+               z_lo_name="S1", z_hi_name="L1"):
+    """Smooth, DISTRIBUTED lordosis correction (the natural-looking synthesis).
+
+    Instead of pivoting the whole upper spine about one disc (a sharp kink), the
+    extension angle RAMPS continuously from 0 at the sacrum to `total_delta_deg` at L1
+    (smoothstep over the lumbar span) — so every lumbar level shares the correction and
+    the result is a smooth lordotic curve with no gaps to fill. One per-voxel rotation
+    field about the L–R axis (Rodrigues), pull-resampled in a single pass; apply the
+    SAME call to the label (order=0) and the CT (order=1) so they stay registered.
+
+    `label_for_axes` supplies the segmentation when `volume` is the CT. Pelvis (below S1)
+    is untouched, so PI is invariant; the thoracic above L1 is carried rigidly."""
+    from scipy import ndimage
+    vol = np.asarray(volume)
+    lab = np.asarray(label_for_axes if label_for_axes is not None else volume)
+    A = np.asarray(affine, float)
+    lr = unit(lr_axis) if lr_axis is not None else _lr_axis(lab, affine, sup_axis)
+    sup_s = unit(project_out(sup_axis, lr))
+
+    def _world(ids):
+        m = np.isin(lab, ids)
+        if not m.any():
+            return None
+        idx = np.argwhere(m)
+        return idx @ A[:3, :3].T + A[:3, 3]
+    s1w = _world([LABELS[z_lo_name]])
+    l1w = _world([LABELS[z_hi_name]])
+    lumw = _world([LABELS[n] for n in ("L1", "L2", "L3", "L4", "L5", "L6", z_lo_name)
+                   if n in LABELS])
+    if s1w is None or l1w is None or lumw is None:
+        return vol                                    # need the span anchors
+    z_lo = float((s1w @ sup_s).max())                 # top of S1 — bend starts here
+    z_hi = float((l1w @ sup_s).max())                 # top of L1 — full correction
+    if z_hi - z_lo < 1e-3:
+        return vol
+    # fulcrum: posterior column at the lumbosacral base (so the anterior column opens)
+    ant = unit(project_out(np.array([0.0, 1.0, 0.0]), lr))
+    if ant[1] < 0:
+        ant = -ant
+    c = lumw.mean(0)
+    F = (c - ((c - s1w.mean(0)) @ sup_s) * sup_s          # drop to S1 height
+         - (float((lumw @ ant).max()) - float(c @ ant)) * ant)   # back to posterior edge
+
+    # sign that ADDS lordosis (widen L1↔S1 Cobb), same robust test as _oriented_theta
+    sgn = 1.0
+    try:
+        from .spine import endplate_from_label
+        _, n1, _ = endplate_from_label(lab, affine, "L1", "superior", normal_axis=sup_axis)
+        _, n7, _ = endplate_from_label(lab, affine, z_lo_name, "superior", normal_axis=sup_axis)
+        if cobb_angle(rotation_matrix(lr, 0.05) @ n1, n7, lr) < \
+           cobb_angle(rotation_matrix(lr, -0.05) @ n1, n7, lr):
+            sgn = -1.0
+    except Exception:
+        pass
+    total = sgn * np.deg2rad(total_delta_deg)
+
+    sh = vol.shape
+    grid = np.stack(np.meshgrid(np.arange(sh[0]), np.arange(sh[1]),
+                                np.arange(sh[2]), indexing="ij"), -1).astype(np.float32)
+    world = grid @ A[:3, :3].T.astype(np.float32) + A[:3, 3].astype(np.float32)
+    h = world @ sup_s.astype(np.float32)
+    t = np.clip((h - z_lo) / (z_hi - z_lo), 0.0, 1.0)
+    theta = (total * (t * t * (3.0 - 2.0 * t))).astype(np.float32)   # smoothstep ramp
+    a = -theta                                        # PULL: output->input is the inverse
+    ca, sa = np.cos(a), np.sin(a)
+    d = (world - F.astype(np.float32))
+    lrf = lr.astype(np.float32)
+    dxl = np.cross(np.broadcast_to(lrf, d.shape), d)
+    ddl = (d @ lrf)[..., None]
+    d_rot = d * ca[..., None] + dxl * sa[..., None] + lrf * ddl * (1.0 - ca)[..., None]
+    src_world = F.astype(np.float32) + d_rot
+    invA = np.linalg.inv(A)
+    src_vox = src_world @ invA[:3, :3].T.astype(np.float32) + invA[:3, 3].astype(np.float32)
+    if cval is None:
+        cval = float(vol.min())
+    out = ndimage.map_coordinates(vol, [src_vox[..., 0], src_vox[..., 1], src_vox[..., 2]],
+                                  order=order, mode="constant", cval=cval)
+    return out.astype(vol.dtype)
+
+
 def simulate_correction(label, affine, level: str, delta_deg: float, *,
                         technique: str = "alif", sup_axis=WORLD_SUPERIOR,
                         lr_axis=None, cage_id: int = CAGE_ID, flip: bool = False):
