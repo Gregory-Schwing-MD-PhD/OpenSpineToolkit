@@ -372,6 +372,89 @@ def schwab_sagittal_modifiers(pi: float, ll: float, pt: float,
     }
 
 
+# Lordosis obtainable per technique (Greenberg Table 73.2 + §73.7.3), degrees.
+# These are the published ceilings the recommendation is reasoned against.
+LORDOSIS_BY_TECHNIQUE = {
+    "TLIF/PLIF": 2,        # <0 (kyphosis) up to 2°
+    "LLIF": 1,             # XLIF/DLIF/OLIF — indirect, modest
+    "ALIF": 6,             # best at L5–S1
+    "SPO": 10,             # Smith-Petersen, ~1°/mm bone resected, per level
+    "ACR": 12,             # anterior column release, per level (+SVA up to 3 cm)
+    "SPO+ACR": 16,
+    "PSO": 35,             # pedicle subtraction osteotomy, 30–40°/level
+}
+
+
+def surgical_recommendation(pi: float, ll: float, pt: float) -> Dict:
+    """Recommend a lordosis-restoring strategy from the amount of correction needed,
+    reasoned ONLY from Greenberg Ch.73 (Eq. 73.1, Table 73.2, Table 73.3, §73.7.3).
+
+    Step 1 — how much lordosis to restore: ΔLL = (PI−LL−9°)+(PT−20°) (Eq. 73.1).
+    Step 2 — severity (SRS-Schwab, Table 73.3) from |PI−LL| and PT.
+    Step 3 — pick the least-invasive technique whose published lordosis ceiling
+             (Table 73.2) covers ΔLL; osteotomy is reserved for large corrections.
+    Returns a structured plan (degrees, severity, primary procedure, fixation,
+    osteotomy, and a chapter-grounded rationale)."""
+    dLL = ll_increase_needed(pi, ll, pt)               # Eq. 73.1
+    pill = abs(pi - ll)
+
+    # severity — Table 73.3 (mild / moderate / severe), SRS-Schwab PI–LL & PT
+    if pill > 30.0 or pt > 30.0:
+        severity = "severe"
+    elif pill > 20.0 or pt > 25.0:
+        severity = "moderate"
+    else:
+        severity = "mild"
+
+    # primary lordosis technique by the amount to restore (Table 73.2 ceilings)
+    if dLL < 2.0:
+        primary = "no major realignment — treat the symptomatic pathology " \
+                  "(decompression ± single-level interbody for stability)"
+        osteotomy = None
+    elif dLL <= LORDOSIS_BY_TECHNIQUE["ALIF"]:
+        primary = "anterior/interbody fusion — single- or two-level ALIF " \
+                  "(≈6°, best at L5–S1) ± LLIF"
+        osteotomy = None
+    elif dLL <= LORDOSIS_BY_TECHNIQUE["ACR"]:
+        primary = "anterior column release (ACR ≈12°/level) with interbody cage"
+        osteotomy = "ACR (anterior, ALL release)"
+    elif dLL <= LORDOSIS_BY_TECHNIQUE["SPO+ACR"]:
+        primary = "Smith-Petersen osteotomy + ACR (≈16°)"
+        osteotomy = "SPO + ACR"
+    else:
+        n = max(1, int(round(dLL / LORDOSIS_BY_TECHNIQUE["PSO"])))
+        primary = f"pedicle subtraction osteotomy (PSO ≈30–40°/level" \
+                  + (f", ×{n} levels" if n > 1 else "") + ")"
+        osteotomy = "PSO"
+
+    # posterior fixation / standalone (Table 73.3 + §73.7.3): standalone interbody
+    # is only an option when PT<20° (well-compensated) with good bone and a ≥22 mm cage
+    if pt < 20.0 and dLL <= LORDOSIS_BY_TECHNIQUE["ALIF"]:
+        fixation = "standalone interbody feasible (PT<20°, good bone, cage ≥22 mm)"
+    elif severity == "severe":
+        fixation = "open posterior fixation to S2/ilium ± osteotomy"
+    else:
+        fixation = "percutaneous posterior fixation (PT≥20°)"
+
+    return {
+        "ll_to_restore_deg": dLL,
+        "severity": severity,
+        "primary": primary,
+        "osteotomy": osteotomy,
+        "fixation": fixation,
+        "objectives": {
+            "LL=PI±9°": pill <= 9.0,
+            "PT<20°": pt < 20.0,
+        },
+        "rationale": (
+            f"Correction need ΔLL = (PI−LL−9) + (PT−20) = {dLL:.1f}° (Eq. 73.1); "
+            f"|PI−LL| {pill:.1f}°, PT {pt:.1f}° → {severity} deformity (Table 73.3). "
+            f"Matched to the least-invasive technique whose Table 73.2 lordosis "
+            f"ceiling covers {dLL:.1f}°."
+        ),
+    }
+
+
 def spinopelvic_summary_from_label(label, affine, *, case_id: str = "",
                                    sup_axis=WORLD_SUPERIOR,
                                    endplate_frac: float = 0.15,
@@ -415,4 +498,6 @@ def spinopelvic_summary_from_label(label, affine, *, case_id: str = "",
     if PI is not None and LL is not None:
         out["PI-LL"] = pi_ll_mismatch(PI, LL)
         out["schwab"] = schwab_sagittal_modifiers(PI, LL, PT)
+        if PT is not None:
+            out["surgery"] = surgical_recommendation(PI, LL, PT)
     return out

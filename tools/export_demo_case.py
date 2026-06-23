@@ -136,12 +136,14 @@ def _intersect(p0, d0, p1, d1):
 
 
 def _angle_entry(name, label, value, color, solid, dashed, arc, label_at, rule=None,
-                 arc_r_px=None):
+                 arc_r_px=None, arc_r_mm=None):
     """solid: [p,q] mm pairs drawn SOLID (the anatomical endplate line). dashed:
     [p,q] pairs drawn DOTTED (reference/construction lines — HRL, VRL, perpendicular,
     pelvic radius). arc: {center,a,b} mm angle wedge. label_at: mm point for the text.
     rule (optional): {dots:[mm,...], marks:[{pos,text},...]} — endpoint/midpoint dots
-    and half-length callouts on the endplate line."""
+    and half-length callouts on the endplate line. arc_r_mm: arc radius in WORLD mm
+    (scales with anatomy/zoom; preferred over fixed-pixel arc_r_px so the wedge stays
+    proportionate on small/mobile renders)."""
     d = {"id": name, "label": label,
          "value": None if value is None else round(float(value), 1), "units": "°",
          "color": color, "segments": solid, "dashed": dashed,
@@ -151,11 +153,16 @@ def _angle_entry(name, label, value, color, solid, dashed, arc, label_at, rule=N
         d["rule"] = rule
     if arc_r_px is not None:
         d["arc_r_px"] = arc_r_px
+    if arc_r_mm is not None:
+        d["arc_r_mm"] = arc_r_mm
     return d
 
 
-def build_geometry(label, affine):
-    """Assemble the angle annotations (world mm) for whatever is computable."""
+def build_geometry(label, affine, endplate_rule=False):
+    """Assemble the angle annotations (world mm) for whatever is computable.
+    endplate_rule: when True, attach the Legaye "½+½" sacral-endplate midpoint
+    callouts (dots/ticks/mm) to the SS construction. Default False (off) — the code
+    is retained; pass True (or --endplate-rule) to re-enable."""
     fem = _femoral_axis(label, affine)
     s1 = _endplate(label, affine, "S1", neighbor="L5")   # S1 endplate faces L5
     l1 = _endplate(label, affine, "L1", neighbor="T12")  # L1 endplate faces T12 (if in FOV)
@@ -248,7 +255,8 @@ def build_geometry(label, affine):
             [s1line, _seg(P, P + HRLL * horiz_post)],     # endplate + HRL solid
             [_seg(P + half * e_post, P + (half + 70.0) * e_post)],   # dotted endplate continuation
             (P, P + 44 * e_post, P + 44 * horiz_post),
-            P + 78 * horiz_post + 16 * sup_s, rule=ss_rule, arc_r_px=92))
+            P + 78 * horiz_post + 16 * sup_s,
+            rule=(ss_rule if endplate_rule else None), arc_r_mm=42))
         # PI: S1-endplate perpendicular (into the pelvis) vs the pelvic radius to the
         # femoral-head axis; wedge at the S1 midpoint. Label sits slightly POSTERIOR
         # (dynamic) so it doesn't collide with PT.
@@ -256,7 +264,8 @@ def build_geometry(label, affine):
             "PI", "Pelvic Incidence", PI, "#36d399",
             [s1line], [_seg(P, P - PERP * n_s), _seg(P, M)],
             (P, P - 46 * n_s, P + 46 * g.unit(M - P)),
-            P + g.unit(g.unit(M - P) - n_s) * 56))   # along the PI bisector, further inferior
+            P + g.unit(g.unit(M - P) - n_s) * 56,     # along the PI bisector, further inferior
+            arc_r_mm=30))
         # PT: pelvic radius vs vertical (VRL), wedge at the femoral-head axis. Label
         # on the ANTERIOR side (dynamic) so PI and PT can be read at the same time.
         vtop = M + max(0.0, float((P - M) @ sup_s)) * sup_s   # VRL stops level with P
@@ -265,7 +274,8 @@ def build_geometry(label, affine):
             [_seg(M, vtop)],                         # VRL solid, from the vertex (no overshoot)
             [_seg(M, P)],                            # radius / hypotenuse dotted
             (M, M + 46 * sup_s, M + 46 * radius),
-            M + 34 * horiz_ant + 50 * sup_s))        # anterior side, clear of the VRL
+            M + 34 * horiz_ant + 50 * sup_s,         # anterior side, clear of the VRL
+            arc_r_mm=34))
 
     if s1 is not None and l1 is not None:
         P1, n1, _ = l1
@@ -312,7 +322,7 @@ def build_geometry(label, affine):
             "LL", "Lumbar Lordosis", LL, "#f472b6",
             [l1_line, s1_line],
             [_seg(A0, X), _seg(A1, beyond1)],
-            (X, A0, beyond1), X + bis * 54))
+            (X, A0, beyond1), X + bis * 54, arc_r_mm=40))
 
     return {"sagittal_normal": [round(float(x), 4) for x in lr],
             "plane_origin": _p(origin), "view_center": _p(view_center),
@@ -345,7 +355,7 @@ def process(args):
     # fast path: rebuild only metrics.json (geometry + summary) from the label,
     # reusing the already-written ct/seg bundles. Seconds, vs reloading the raw CT.
     if getattr(args, "geometry_only", False):
-        geom = build_geometry(seg, laff)
+        geom = build_geometry(seg, laff, endplate_rule=args.endplate_rule)
         summary = metrics.spinopelvic_summary_from_label(seg, laff, case_id=args.case_id)
         ll = next((a for a in geom["angles"] if a["id"] == "LL" and a["value"] is not None), None)
         if ll:
@@ -365,7 +375,7 @@ def process(args):
         if ct.shape != seg.shape:
             raise SystemExit("CT and label grids differ; resample first")
 
-    geom = build_geometry(seg, laff)
+    geom = build_geometry(seg, laff, endplate_rule=args.endplate_rule)
     summary = metrics.spinopelvic_summary_from_label(seg, laff, case_id=args.case_id)
     # keep the report's LL identical to the drawn construction (neighbour-based)
     ll_ang = next((a for a in geom["angles"] if a["id"] == "LL" and a["value"] is not None), None)
@@ -449,6 +459,9 @@ def main(argv=None):
     p.add_argument("--downsample", type=int, default=1, help="subsample factor")
     p.add_argument("--geometry-only", action="store_true",
                    help="rebuild only metrics.json from the label; reuse ct/seg")
+    p.add_argument("--endplate-rule", action="store_true",
+                   help="draw the Legaye 1/2+1/2 sacral-endplate midpoint callouts "
+                        "(off by default)")
     process(p.parse_args(argv))
     return 0
 

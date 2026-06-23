@@ -120,6 +120,28 @@ def test_roussouly_type_from_ss():
     assert metrics.roussouly_type_from_ss(46) == "4"
 
 
+def test_surgical_recommendation_from_chapter():
+    # near-balanced (case 0003): ΔLL=(55.5-45.7-9)+(23.2-20)=4.0° -> interbody, no osteotomy
+    r = metrics.surgical_recommendation(55.5, 45.7, 23.2)
+    assert round(r["ll_to_restore_deg"], 1) == 4.0
+    assert r["severity"] == "mild" and r["osteotomy"] is None
+    assert "interbody" in r["primary"].lower()
+
+    # fully balanced: ΔLL=0 -> no realignment, standalone feasible (PT<20)
+    bal = metrics.surgical_recommendation(50, 48, 12)
+    assert bal["ll_to_restore_deg"] == 0.0 and "no major realignment" in bal["primary"]
+    assert "standalone" in bal["fixation"]
+
+    # moderate need ΔLL=11 -> ACR (≤12°/level)
+    mod = metrics.surgical_recommendation(60, 42, 22)
+    assert mod["osteotomy"] == "ACR (anterior, ALL release)"
+
+    # severe ΔLL=46, |PI-LL|=40 -> PSO + open pelvic fixation
+    sev = metrics.surgical_recommendation(70, 30, 35)
+    assert sev["severity"] == "severe" and sev["osteotomy"] == "PSO"
+    assert "ilium" in sev["fixation"]
+
+
 def test_femoral_head_center_rejects_neck_and_shaft():
     """The robust head fit must recover the spherical head centre despite the neck
     and shaft, using the acetabular interface — and beat a naive whole-femur fit."""
