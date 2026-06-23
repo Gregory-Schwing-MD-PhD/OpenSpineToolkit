@@ -95,15 +95,23 @@ def _hinge_fulcrum(label, affine, level, position, sup_axis, lr) -> Optional[np.
 
 
 def _oriented_theta(label, affine, level, delta_deg, lr, sup_axis) -> float:
+    """Signed rotation (rad) that ADDS lordosis. Pick the sign that widens the actual
+    LL Cobb — the L1↔S1 endplate angle (L1 = the LL top reference, in the mobile
+    segment) — applying the SAME vector rotation the voxels get. Maximising the L1–S1
+    Cobb (which stays <90° for any lumbar spine, so the acute value is monotonic) is
+    exactly 'increase lordosis'. Falls back to +|Δ| if an endplate is unavailable."""
     th = float(np.deg2rad(abs(delta_deg)))
+    present = set(int(v) for v in np.unique(label)) - {0}
+    mobile = set(mobile_ids_for_level(level, present))
+    ref = "L1" if LABELS["L1"] in mobile else level   # top of the mobile segment
     try:
         from .spine import endplate_from_label
-        _, n_lvl, _ = endplate_from_label(label, affine, level, "superior", normal_axis=sup_axis)
+        _, n_ref, _ = endplate_from_label(label, affine, ref, "superior", normal_axis=sup_axis)
         _, n_s1, _ = endplate_from_label(label, affine, "S1", "superior", normal_axis=sup_axis)
     except Exception:
         return th
-    plus = cobb_angle(rotation_matrix(lr, th) @ n_lvl, n_s1, lr)
-    minus = cobb_angle(rotation_matrix(lr, -th) @ n_lvl, n_s1, lr)
+    plus = cobb_angle(rotation_matrix(lr, th) @ n_ref, n_s1, lr)
+    minus = cobb_angle(rotation_matrix(lr, -th) @ n_ref, n_s1, lr)
     return th if plus >= minus else -th
 
 
@@ -210,7 +218,8 @@ def compensate_pelvis(label, affine, *, target_pt: float = 20.0,
 
 
 def correction_transform(label, affine, level: str, delta_deg: float, *,
-                         technique: str = "alif", sup_axis=WORLD_SUPERIOR, lr_axis=None):
+                         technique: str = "alif", sup_axis=WORLD_SUPERIOR, lr_axis=None,
+                         flip: bool = False):
     """Resolve the correction into its geometric pieces (shared by the label and CT
     paths): the mobile vertebra ids, the hinge fulcrum F (world), the L–R rotation
     axis, the signed angle θ, and the technique's (fulcrum position, reconcile mode)."""
@@ -226,6 +235,8 @@ def correction_transform(label, affine, level: str, delta_deg: float, *,
     position, mode = TECHNIQUES.get(technique.lower(), ("posterior", "cage"))
     lr = unit(lr_axis) if lr_axis is not None else _lr_axis(label, affine, sup_axis)
     theta = _oriented_theta(label, affine, level, delta_deg, lr, sup_axis)
+    if flip:                                          # caller-forced opposite direction
+        theta = -theta
     F = _hinge_fulcrum(label, affine, level, position, sup_axis, lr)
     if F is None:
         F = A[:3, :3] @ np.argwhere(lvl_mask).mean(0) + A[:3, 3]
@@ -235,7 +246,8 @@ def correction_transform(label, affine, level: str, delta_deg: float, *,
 
 def warp_ct(ct, label, affine, level: str, delta_deg: float, *,
             technique: str = "alif", sup_axis=WORLD_SUPERIOR, lr_axis=None,
-            postop_label=None, cage_hu: float = 250.0, cage_id: int = CAGE_ID):
+            postop_label=None, cage_hu: float = 250.0, cage_id: int = CAGE_ID,
+            flip: bool = False):
     """Phase 3 — synthesise the post-op CT IMAGE. The mobile vertebral segment moves
     rigidly with its labels; surrounding soft tissue deforms SMOOTHLY so there is no
     seam, via a displacement field weighted w∈[0,1] (1 at mobile bone → full rigid
@@ -247,8 +259,8 @@ def warp_ct(ct, label, affine, level: str, delta_deg: float, *,
     ct = np.asarray(ct)
     label = np.asarray(label)
     A = np.asarray(affine, dtype=float)
-    t = correction_transform(label, affine, level, delta_deg,
-                             technique=technique, sup_axis=sup_axis, lr_axis=lr_axis)
+    t = correction_transform(label, affine, level, delta_deg, technique=technique,
+                             sup_axis=sup_axis, lr_axis=lr_axis, flip=flip)
     F, lr, theta = t["F"], t["lr"], t["theta"]
     Rinv = rotation_matrix(lr, -theta)
 
@@ -281,7 +293,7 @@ def warp_ct(ct, label, affine, level: str, delta_deg: float, *,
 
 def simulate_correction(label, affine, level: str, delta_deg: float, *,
                         technique: str = "alif", sup_axis=WORLD_SUPERIOR,
-                        lr_axis=None, cage_id: int = CAGE_ID):
+                        lr_axis=None, cage_id: int = CAGE_ID, flip: bool = False):
     """Return a NEW label volume with the segment at/above `level` rotated by
     `delta_deg`° of added lordosis about the technique's hinge fulcrum (pelvis fixed),
     with the hinge reconciled per technique (interbody/ACR → cage; PSO → body-wedge
@@ -289,8 +301,8 @@ def simulate_correction(label, affine, level: str, delta_deg: float, *,
     """
     label = np.asarray(label)
     present = set(int(v) for v in np.unique(label)) - {0}
-    t = correction_transform(label, affine, level, delta_deg,
-                             technique=technique, sup_axis=sup_axis, lr_axis=lr_axis)
+    t = correction_transform(label, affine, level, delta_deg, technique=technique,
+                             sup_axis=sup_axis, lr_axis=lr_axis, flip=flip)
 
     # rotate the mobile segment about the hinge fulcrum (rotated voxels overwrite at
     # overlaps; for PSO the anterior fulcrum makes that overlap the resected, closed

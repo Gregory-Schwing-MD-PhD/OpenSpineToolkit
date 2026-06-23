@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ostk import geometry as g       # noqa: E402
 from ostk import metrics             # noqa: E402
 from ostk import spine               # noqa: E402
+from ostk import surgery             # noqa: E402
 from ostk.io import load_ct, load_label, voxels_to_world  # noqa: E402
 from ostk.labels import lid          # noqa: E402
 from ostk.masks import (binary_mask, endplate_points, largest_component,  # noqa: E402
@@ -374,6 +375,74 @@ def process(args):
         print(f"[{args.case_id}] geometry-only -> "
               f"{[a['id'] + '=' + str(a['value']) for a in geom['angles']]}")
         return
+    # post-op mode: synthesise the post-operative state from the ALREADY-SHIPPED
+    # (cropped/downsampled) demo volumes, so postop_ct/postop_seg align with the pre-op
+    # ones. Writes postop_{ct,seg}.nii.gz + a "postop" block in metrics.json (its own
+    # construction geometry + summary + the plan). Self-contained — no raw CT needed.
+    if getattr(args, "postop", False):
+        cdir = os.path.join(args.out_dir, args.case_id)
+        seg_img = nib.load(os.path.join(cdir, "seg.nii.gz"))
+        segp = np.asanyarray(seg_img.dataobj).astype(np.int32)
+        aff = seg_img.affine
+        ct_img = nib.load(os.path.join(cdir, "ct.nii.gz"))
+        ctp = np.asanyarray(ct_img.dataobj)
+
+        # baseline = the FULL-RES headline summary already in metrics.json, so PI (which
+        # is posture-invariant) and the pre-op LL match exactly across the pre/post
+        # toggle (recomputing on the cropped/downsampled seg would shift them ~1-2°).
+        meta0 = json.load(open(os.path.join(cdir, "metrics.json"), encoding="utf-8"))
+        base = meta0.get("summary") or metrics.spinopelvic_summary_from_label(segp, aff, case_id=args.case_id)
+        delta = args.postop_delta
+        if delta <= 0:                                   # default: the recommended ΔLL
+            delta = float((base.get("surgery") or {}).get("ll_to_restore_deg") or 10.0)
+        level, tech = args.postop_level, args.postop_technique
+
+        # The rotation + CT warp are exact geometric transforms, but RE-MEASURING the
+        # rotated, downsampled demo label is unreliable (resampling degrades the thin
+        # endplate fits). So the post-op ANGLES are derived ANALYTICALLY from the pre-op
+        # baseline + the applied correction (LL += ΔLL, PI invariant, pelvis compensated),
+        # which is exact; the warped image + rotated construction are for visualisation
+        # (the displayed angle values are overridden to the analytic numbers).
+        postop_seg = surgery.simulate_correction(segp, aff, level, delta, technique=tech)
+        postop_ct = surgery.warp_ct(ctp, segp, aff, level, delta, technique=tech,
+                                    postop_label=postop_seg)
+        pgeom = build_geometry(postop_seg, aff, endplate_rule=args.endplate_rule)
+
+        PI = base.get("PI")
+        LL_post = round(base["LL"] + abs(delta), 1) if base.get("LL") is not None else None
+        psum = dict(base)
+        if PI is not None and LL_post is not None:
+            psum["LL"] = LL_post
+            psum["PI-LL"] = metrics.pi_ll_mismatch(PI, LL_post)
+            comp = surgery.predict_compensated_alignment(PI, base["PT"]) if base.get("PT") is not None else None
+            pt_post = comp["PT"] if comp else base.get("PT")
+            if comp:
+                psum["PT"], psum["SS"] = comp["PT"], comp["SS"]
+                psum["PT_standing"], psum["SS_standing"] = comp["PT"], comp["SS"]
+                psum["pelvic_rotation_deg"] = comp["pelvic_rotation_deg"]
+            psum["schwab"] = metrics.schwab_sagittal_modifiers(PI, LL_post, pt_post or 0.0)
+            psum["surgery"] = metrics.surgical_recommendation(PI, LL_post, pt_post or 0.0)
+            # show the analytic numbers on the drawn constructions too
+            for a in pgeom["angles"]:
+                a["value"] = {"PI": PI, "SS": psum.get("SS"), "PT": psum.get("PT"),
+                              "LL": LL_post}.get(a["id"], a["value"])
+
+        nib.save(nib.Nifti1Image(postop_seg.astype(np.int16), aff),
+                 os.path.join(cdir, "postop_seg.nii.gz"))
+        nib.save(nib.Nifti1Image(postop_ct.astype(np.int16), aff),
+                 os.path.join(cdir, "postop_ct.nii.gz"))
+        mpath = os.path.join(cdir, "metrics.json")
+        meta = json.load(open(mpath, encoding="utf-8"))
+        meta["postop"] = {"summary": psum, "geometry": pgeom, "preop_summary": base,
+                          "files": {"ct": "postop_ct.nii.gz", "seg": "postop_seg.nii.gz"},
+                          "plan": {"level": level, "technique": tech,
+                                   "delta_deg": round(float(delta), 1)}}
+        json.dump(meta, open(mpath, "w", encoding="utf-8"), indent=2, default=_jdef)
+        print(f"[{args.case_id}] postop {tech} {level} dLL~{delta:.1f}deg -> "
+              f"LL {base.get('LL')}->{psum.get('LL')}  PI-LL "
+              f"{base.get('PI-LL',{}).get('pi_minus_ll')}->{psum.get('PI-LL',{}).get('pi_minus_ll')}")
+        return
+
     ct = caff = None
     if args.ct:
         ct, caff = load_ct(args.ct)
@@ -467,6 +536,13 @@ def main(argv=None):
     p.add_argument("--endplate-rule", action="store_true",
                    help="draw the Legaye 1/2+1/2 sacral-endplate midpoint callouts "
                         "(off by default)")
+    p.add_argument("--postop", action="store_true",
+                   help="synthesise the post-op state from the shipped ct/seg "
+                        "(writes postop_{ct,seg}.nii.gz + a postop block in metrics.json)")
+    p.add_argument("--postop-level", default="L4", help="operative level (lowest mobile)")
+    p.add_argument("--postop-technique", default="alif", help="alif/llif/tlif/acr/spo/pso")
+    p.add_argument("--postop-delta", type=float, default=0.0,
+                   help="ΔLL degrees to add; <=0 uses the recommended ll_to_restore")
     process(p.parse_args(argv))
     return 0
 
