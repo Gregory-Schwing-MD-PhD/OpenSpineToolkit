@@ -203,3 +203,12 @@ OpenSpineToolkit/
 └── projects/
     └── <your-project>/  <- one folder per miniproject
 ```
+
+## License
+
+OpenSpineToolkit is licensed under the [Apache License 2.0](LICENSE) — free for
+research, educational, and commercial use, with a patent grant and attribution
+(see `NOTICE`). Contributions are accepted under the same license.
+
+> **Research / educational use only — not a medical device and not for clinical
+> decision-making.**
