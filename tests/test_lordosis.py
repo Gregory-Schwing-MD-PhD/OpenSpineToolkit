@@ -274,3 +274,28 @@ def test_simulate_correction_technique_reconciliation():
         post = metrics.spinopelvic_summary_from_label(out, A)
         assert (post["LL"] - pre["LL"]) > 12.0 - 4.0           # lordosis added
         assert abs(post["PI"] - pre["PI"]) < 1.5               # pelvis fixed
+
+
+def test_predict_compensated_alignment_exact():
+    """Phase-2.5 analytic: re-posturing about the hips keeps PI (=PT+SS), drives PT to
+    the target, and raises SS by the released amount; no-op when already balanced."""
+    from ostk import surgery
+    r = surgery.predict_compensated_alignment(pi=55.0, pt=30.0, target_pt=20.0)
+    assert r["PT"] == 20.0 and r["SS"] == 35.0 and r["pelvic_rotation_deg"] == 10.0
+    assert r["PT"] + r["SS"] == 55.0                            # PI conserved
+    bal = surgery.predict_compensated_alignment(pi=50.0, pt=12.0, target_pt=20.0)
+    assert bal["PT"] == 12.0 and bal["pelvic_rotation_deg"] == 0.0   # nothing to release
+
+
+def test_compensate_pelvis_voxel_releases_retroversion():
+    """Phase-2.5 voxel helper drives PT DOWN toward the target (exact angle landing is
+    validated analytically above; the voxel rotation is for the Phase-3 image and is
+    lossy at phantom resolution, so this only checks direction + the no-op guard)."""
+    from ostk import surgery
+    label, A = _phantom_spine(), np.eye(4)
+    pre = metrics.spinopelvic_summary_from_label(label, A)
+    out = surgery.compensate_pelvis(label, A, target_pt=pre["PT"] - 6.0)
+    post = metrics.spinopelvic_summary_from_label(out, A)
+    assert post["PT"] < pre["PT"] - 2.0                         # retroversion released
+    same = surgery.compensate_pelvis(label, A, target_pt=pre["PT"] + 5.0)   # already below
+    assert np.array_equal(same, label)                          # no-op guard

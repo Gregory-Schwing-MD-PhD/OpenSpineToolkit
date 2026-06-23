@@ -22,7 +22,8 @@ from typing import List, Optional
 
 import numpy as np
 
-from .geometry import WORLD_SUPERIOR, rotation_matrix, unit, cobb_angle
+from .geometry import (WORLD_SUPERIOR, rotation_matrix, unit, cobb_angle,
+                       project_out, angle_between)
 from .labels import LABELS
 
 # Cranial → caudal vertebral chain. The "mobile" segment for a correction at `level`
@@ -133,6 +134,81 @@ def _fill_disc_cage(out, rot_level_mask, below_mask, cage_id, k, cranial_is_plus
     o[gap] = cage_id                                 # writes through the view -> `out`
 
 
+def predict_compensated_alignment(pi: float, pt: float, *, target_pt: float = 20.0):
+    """Phase 2.5 (analytic) — the post-op STANDING angles after the pelvis releases its
+    compensatory retroversion. Re-posturing about the hips is rigid, so PI (and LL) are
+    invariant; only the gravity-referenced angles change, and PT+SS=PI always. The
+    pelvis anteverts until PT reaches `target_pt` (no change if already ≤ target):
+
+        PT_post = min(pt, target_pt),  SS_post = pi − PT_post,  rotation = pt − PT_post.
+
+    Exact (no voxel resampling); use this for the predicted standing PT/SS in the report.
+    The voxel realisation for the synthetic IMAGE is compensate_pelvis (Phase 3)."""
+    pt_post = min(pt, target_pt)
+    return {"PT": round(pt_post, 3),
+            "SS": round(pi - pt_post, 3),
+            "pelvic_rotation_deg": round(pt - pt_post, 3)}
+
+
+def _rotate_ids(label, affine, ids, F, lr, theta):
+    """Return a copy of `label` with voxels of `ids` rigidly rotated by `theta` rad
+    about world point `F`, axis `lr` (rotated voxels overwrite at overlaps)."""
+    from scipy import ndimage
+    label = np.asarray(label)
+    A = np.asarray(affine, float)
+    Rinv = rotation_matrix(lr, -theta)                 # affine_transform pulls (output->input)
+    Tn = np.eye(4)
+    Tn[:3, :3] = Rinv
+    Tn[:3, 3] = F - Rinv @ F
+    M = np.linalg.inv(A) @ Tn @ A
+    seg = np.where(np.isin(label, ids), label, 0).astype(label.dtype)
+    rot = ndimage.affine_transform(seg, M[:3, :3], offset=M[:3, 3], order=0,
+                                   output_shape=label.shape)
+    out = np.where(np.isin(label, ids), 0, label)
+    moved = rot > 0
+    out[moved] = rot[moved]
+    return out.astype(label.dtype)
+
+
+def compensate_pelvis(label, affine, *, target_pt: float = 20.0,
+                      sup_axis=WORLD_SUPERIOR, lr_axis=None):
+    """Phase 2.5 (voxel realisation, for the Phase-3 IMAGE) — rotate the whole bony
+    spine + sacrum rigidly about the femoral-head axis (femurs = fixed ground) so PT
+    falls toward `target_pt`. For the post-op ANGLES use predict_compensated_alignment
+    (exact); this voxel rotation is lossy at coarse resolution and is meant for
+    rendering the standing posture on real-resolution CT. No-op if PT ≤ target or the
+    pelvis/femurs are unavailable."""
+    from .metrics import spinopelvic_summary_from_label, femoral_head_center
+    from .spine import endplate_overmask_midpoint_from_label
+    label = np.asarray(label)
+    s = spinopelvic_summary_from_label(label, affine)
+    pt = s.get("PT")
+    if pt is None or pt <= target_pt:
+        return label
+    L = femoral_head_center(label, affine, "femur_left", "left_hip", sup_axis=sup_axis)
+    R = femoral_head_center(label, affine, "femur_right", "right_hip", sup_axis=sup_axis)
+    if L is None or R is None:
+        return label
+    F = 0.5 * (L[0] + R[0])
+    lr = unit(lr_axis) if lr_axis is not None else unit(R[0] - L[0])
+
+    # sign: rotate the pelvic radius (M->S1 midpoint) so PT moves toward target
+    m = endplate_overmask_midpoint_from_label(label, affine, "S1", sup_axis, "superior")
+    th = float(np.deg2rad(pt - target_pt))
+    if m is not None:
+        r = np.asarray(m, float) - F
+        sup_s = unit(project_out(sup_axis, lr))
+        pp = angle_between(project_out(rotation_matrix(lr, th) @ r, lr), sup_s)
+        pm = angle_between(project_out(rotation_matrix(lr, -th) @ r, lr), sup_s)
+        if abs(pm - target_pt) < abs(pp - target_pt):
+            th = -th
+
+    present = set(int(v) for v in np.unique(label)) - {0}
+    spine_ids = [LABELS[n] for n in (SPINE_CRANIOCAUDAL + ["S1", "sacrum"])
+                 if LABELS[n] in present]
+    return _rotate_ids(label, affine, spine_ids, F, lr, th)
+
+
 def simulate_correction(label, affine, level: str, delta_deg: float, *,
                         technique: str = "alif", sup_axis=WORLD_SUPERIOR,
                         lr_axis=None, cage_id: int = CAGE_ID):
@@ -161,22 +237,10 @@ def simulate_correction(label, affine, level: str, delta_deg: float, *,
     if F is None:                                    # fallback: level centroid (same angle)
         F = A[:3, :3] @ np.argwhere(lvl_mask).mean(0) + A[:3, 3]
 
-    # affine_transform pulls: output index -> input index uses R⁻¹ about F.
-    Rinv = rotation_matrix(lr, -theta)
-    Tn = np.eye(4)
-    Tn[:3, :3] = Rinv
-    Tn[:3, 3] = F - Rinv @ F
-    M = np.linalg.inv(A) @ Tn @ A
-
-    from scipy import ndimage
-    mobile_only = np.where(np.isin(label, mobile), label, 0).astype(label.dtype)
-    rotated = ndimage.affine_transform(mobile_only, M[:3, :3], offset=M[:3, 3],
-                                       order=0, output_shape=label.shape)
-    out = np.where(np.isin(label, mobile), 0, label)   # lift the mobile segment out
-    moved = rotated > 0
-    out[moved] = rotated[moved]                         # set down rotated (mobile wins overlaps;
-                                                        # for PSO the anterior fulcrum makes this
-                                                        # overlap the resected, closed body wedge)
+    # rotate the mobile segment about the hinge fulcrum (rotated voxels overwrite at
+    # overlaps; for PSO the anterior fulcrum makes that overlap the resected, closed
+    # body wedge).
+    out = _rotate_ids(label, affine, mobile, F, lr, theta)
 
     if mode == "cage":
         below = _vertebra_below(level)
