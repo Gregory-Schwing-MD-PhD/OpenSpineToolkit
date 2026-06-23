@@ -491,7 +491,7 @@ def process(args):
         # cage), NOT a colored label. NO vertebral body is resected (that is PSO only).
         if tech.lower() in ("alif", "llif", "tlif", "interbody", "acr") and op_discs:
             postop_seg, postop_ct = surgery.place_interbody_cages(
-                postop_seg, postop_ct, A_demo, op_discs, cage_id=None, cage_hu=1500.0)
+                postop_seg, postop_ct, A_demo, op_discs, cage_id=None, cage_hu=3000.0)
 
         nib.save(nib.Nifti1Image(postop_seg.astype(np.int16), A_demo),
                  os.path.join(cdir, "postop_seg.nii.gz"))

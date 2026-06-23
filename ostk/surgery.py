@@ -421,43 +421,70 @@ def _rodrigues(d, lr, angle):
 
 
 def place_interbody_cages(label, ct, affine, disc_pairs, *, cage_id=CAGE_ID,
-                          cage_hu=1200.0, sup_axis=WORLD_SUPERIOR, lr_axis=None,
-                          ap_mm=13.0, width_mm=26.0, height_mm=9.0, anterior_frac=0.22):
-    """Render a clean interbody CAGE in each operated disc — the hardware of an ALIF/LLIF/
-    TLIF/ACR (anterior/lateral interbody fusion); NO vertebral body is resected (PSO only).
-    Each cage is a tidy oriented BOX (not the ragged disc gap) seated in the ANTERIOR disc
-    space, sized like a real device (≈ width×AP×height mm) and stamped at metal HU so it
-    reads as an implant. Returns (label, ct) copies. `disc_pairs` = [(upper, lower), …]."""
+                          cage_hu=1500.0, sup_axis=WORLD_SUPERIOR, lr_axis=None,
+                          ap_mm=30.0, width_mm=30.0, h_ant_mm=14.0, h_post_mm=7.0,
+                          anterior_frac=0.12):
+    """Render a realistic interbody CAGE in each operated disc — the hardware of an ALIF/
+    LLIF/TLIF/ACR (anterior/lateral interbody fusion); NO vertebral body is resected (PSO
+    only). Each cage is a LORDOTIC WEDGE (taller anteriorly than posteriorly, like a real
+    lumbar cage) seated IN the disc space — centred at the interface between the bottom of
+    the upper body and the top of the lower body (using vertebra centroids would drop the
+    L5–S1 cage below the disc, since "S1" spans the whole sacrum) and TILTED to the local
+    endplate. Stamped at metal HU so it reads as an implant on CT (`cage_id=None` → CT-only,
+    no colour label). Returns (label, ct) copies. `disc_pairs` = [(upper, lower), …]."""
     lab = np.asarray(label).copy()
     im = np.asarray(ct).copy()
     A = np.asarray(affine, float)
     lr = unit(lr_axis) if lr_axis is not None else _lr_axis(lab, A, sup_axis)
     sup_s = unit(project_out(sup_axis, lr))
-    ant = unit(project_out(np.array([0.0, 1.0, 0.0]), lr))
-    if ant[1] < 0:
-        ant = -ant
-    # world coordinate of every voxel + its projections onto the anatomical axes (once)
+    ant0 = unit(project_out(np.array([0.0, 1.0, 0.0]), lr))
+    if ant0[1] < 0:
+        ant0 = -ant0
     gi = np.indices(lab.shape).reshape(3, -1).T
-    world = gi @ A[:3, :3].T + A[:3, 3]
-    pl, pa, ps = world @ lr, world @ ant, world @ sup_s
+    world = (gi @ A[:3, :3].T + A[:3, 3]).astype(np.float32)
+    flat = lab.reshape(-1)
     for up, lo in disc_pairs:
         if up not in LABELS or lo not in LABELS:
             continue
-        wu = gi[(lab.reshape(-1) == LABELS[up])]
-        wl = gi[(lab.reshape(-1) == LABELS[lo])]
+        wu = gi[flat == LABELS[up]]
+        wl = gi[flat == LABELS[lo]]
         if not len(wu) or not len(wl):
             continue
         wu = wu @ A[:3, :3].T + A[:3, 3]
         wl = wl @ A[:3, :3].T + A[:3, 3]
-        center = 0.5 * (wu.mean(0) + wl.mean(0))          # disc centre
-        depth = float((wu @ ant).max() - (wu @ ant).min())
-        center = center + ant * (anterior_frac * depth)   # seat it anteriorly
-        box = ((np.abs(pl - center @ lr) <= width_mm / 2) &
-               (np.abs(pa - center @ ant) <= ap_mm / 2) &
-               (np.abs(ps - center @ sup_s) <= height_mm / 2))
-        if cage_id is not None:                           # label it (else CT-only implant)
+        # disc = interface between the BOTTOM slab of the upper body and the TOP slab of
+        # the lower body (robust to the sacrum's long inferior extent).
+        su, sl = wu @ sup_s, wl @ sup_s
+        c_up = wu[su <= np.percentile(su, 25)].mean(0)     # bottom of upper vertebra
+        c_lo = wl[sl >= np.percentile(sl, 75)].mean(0)     # top of lower vertebra
+        center = 0.5 * (c_up + c_lo)
+        # disc normal = the lower body's SUPERIOR endplate normal (robust to steeply tilted
+        # discs like L5–S1, where slab centroids sit at the same height); fall back to the
+        # slab vector if the endplate fit is unavailable.
+        try:
+            from .spine import endplate_from_label
+            _, hgt, _ = endplate_from_label(lab, A, lo, "superior", normal_axis=sup_axis)
+            hgt = unit(hgt)
+        except Exception:
+            hgt = unit(c_up - c_lo)
+        if hgt @ sup_s < 0:
+            hgt = -hgt
+        lrx = unit(project_out(lr, hgt))                   # local L–R (in endplate plane)
+        apx = unit(np.cross(hgt, lrx))                     # local anterior–posterior
+        if apx @ ant0 < 0:
+            apx = -apx
+        depth = float((wu @ apx).max() - (wu @ apx).min())
+        wide = float((wu @ lrx).max() - (wu @ lrx).min())
+        apw, ww = min(ap_mm, 0.72 * depth), min(width_mm, 0.85 * wide)
+        center = center + apx * (anterior_frac * depth)    # seat slightly anterior
+        d = world - center.astype(np.float32)
+        ul, ua, uh = d @ lrx, d @ apx, d @ hgt
+        t = np.clip((ua + apw / 2) / apw, 0.0, 1.0)        # 0 posterior → 1 anterior
+        hh = 0.5 * (h_post_mm + (h_ant_mm - h_post_mm) * t)   # wedge: taller anteriorly
+        box = (np.abs(ul) <= ww / 2) & (np.abs(ua) <= apw / 2) & (np.abs(uh) <= hh)
+        if cage_id is not None:                            # label it (else CT-only implant)
             lab.reshape(-1)[box] = cage_id
-        im.reshape(-1)[box] = cage_hu                     # bright metal HU on the CT
+        im.reshape(-1)[box] = cage_hu                      # bright metal HU on the CT
     return lab, im
 
 
