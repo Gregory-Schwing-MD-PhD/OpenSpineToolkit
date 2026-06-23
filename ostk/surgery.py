@@ -421,36 +421,57 @@ def _rodrigues(d, lr, angle):
 
 
 def place_interbody_cages(label, ct, affine, disc_pairs, *, cage_id=CAGE_ID,
-                          cage_hu=350.0, gap_iters=3):
-    """Render an interbody CAGE in each operated disc — the surgical hardware of an
-    ALIF/LLIF/TLIF/ACR (anterior/lateral interbody fusion); NO vertebral body is
-    resected (that is PSO only). The disc space is the thin gap between two adjacent
-    vertebra masks (their dilated overlap); we fill it with a cage label + a bright-ish
-    implant HU so the post-op CT shows a device at every fused level. Returns
-    (label, ct) copies. `disc_pairs` = [(upper, lower), …] cranial→caudal."""
-    from scipy import ndimage
+                          cage_hu=1200.0, sup_axis=WORLD_SUPERIOR, lr_axis=None,
+                          ap_mm=13.0, width_mm=26.0, height_mm=9.0, anterior_frac=0.22):
+    """Render a clean interbody CAGE in each operated disc — the hardware of an ALIF/LLIF/
+    TLIF/ACR (anterior/lateral interbody fusion); NO vertebral body is resected (PSO only).
+    Each cage is a tidy oriented BOX (not the ragged disc gap) seated in the ANTERIOR disc
+    space, sized like a real device (≈ width×AP×height mm) and stamped at metal HU so it
+    reads as an implant. Returns (label, ct) copies. `disc_pairs` = [(upper, lower), …]."""
     lab = np.asarray(label).copy()
     im = np.asarray(ct).copy()
+    A = np.asarray(affine, float)
+    lr = unit(lr_axis) if lr_axis is not None else _lr_axis(lab, A, sup_axis)
+    sup_s = unit(project_out(sup_axis, lr))
+    ant = unit(project_out(np.array([0.0, 1.0, 0.0]), lr))
+    if ant[1] < 0:
+        ant = -ant
+    # world coordinate of every voxel + its projections onto the anatomical axes (once)
+    gi = np.indices(lab.shape).reshape(3, -1).T
+    world = gi @ A[:3, :3].T + A[:3, 3]
+    pl, pa, ps = world @ lr, world @ ant, world @ sup_s
     for up, lo in disc_pairs:
         if up not in LABELS or lo not in LABELS:
             continue
-        um, lm = lab == LABELS[up], lab == LABELS[lo]
-        if not um.any() or not lm.any():
+        wu = gi[(lab.reshape(-1) == LABELS[up])]
+        wl = gi[(lab.reshape(-1) == LABELS[lo])]
+        if not len(wu) or not len(wl):
             continue
-        disc = (ndimage.binary_dilation(um, iterations=gap_iters)
-                & ndimage.binary_dilation(lm, iterations=gap_iters) & (lab == 0))
-        lab[disc] = cage_id
-        im[disc] = cage_hu
+        wu = wu @ A[:3, :3].T + A[:3, 3]
+        wl = wl @ A[:3, :3].T + A[:3, 3]
+        center = 0.5 * (wu.mean(0) + wl.mean(0))          # disc centre
+        depth = float((wu @ ant).max() - (wu @ ant).min())
+        center = center + ant * (anterior_frac * depth)   # seat it anteriorly
+        box = ((np.abs(pl - center @ lr) <= width_mm / 2) &
+               (np.abs(pa - center @ ant) <= ap_mm / 2) &
+               (np.abs(ps - center @ sup_s) <= height_mm / 2))
+        if cage_id is not None:                           # label it (else CT-only implant)
+            lab.reshape(-1)[box] = cage_id
+        im.reshape(-1)[box] = cage_hu                     # bright metal HU on the CT
     return lab, im
 
 
 def bend_params(label, affine, *, delta_ll, delta_tk=0.0, pelvic_antevert=0.0,
-                sup_axis=WORLD_SUPERIOR, lr_axis=None):
+                top_op="L1", sup_axis=WORLD_SUPERIOR, lr_axis=None):
     """Compute the WORLD-SPACE parameters of the post-op bend ONCE (L–R axis, lumbosacral
     fulcrum, height anchors, signed angle ramp, pelvic hinge). They are in mm and grid-
     independent, so derive them on a fast COARSE segmentation and reuse them for both the
     full-res image warp (`synthesize_postop`) and the analytic overlay/number carry-forward
-    (`transform_world_points`). Returns a dict, or None if the span anchors are missing."""
+    (`transform_world_points`). Returns a dict, or None if the span anchors are missing.
+
+    `top_op` = the TOP operated vertebra: lordosis ramps 0→ΔLL over S1→top_op (the fused
+    segment), then rides flat (carried) up to L1, so a 2-level ALIF L4–S1 concentrates the
+    correction at L4–S1 instead of spreading it across every lumbar level."""
     lab = np.asarray(label)
     A = np.asarray(affine, float)
     lr = unit(lr_axis) if lr_axis is not None else _lr_axis(lab, affine, sup_axis)
@@ -486,8 +507,13 @@ def bend_params(label, affine, *, delta_ll, delta_tk=0.0, pelvic_antevert=0.0,
             sgn = -1.0
     except Exception:
         pass
-    zs = np.array([z_s1, z_l1, max(z_tt, z_l1 + 1.0)], dtype=float)
-    ang = sgn * np.deg2rad(np.array([0.0, delta_ll, delta_ll - delta_tk], dtype=float))
+    # lordosis ramps 0→ΔLL over S1→top_op (the fused segment), flat (carried) to L1, then
+    # reciprocal thoracic flexion ΔLL→ΔLL−ΔTK over L1→top-thoracic.
+    topw = _w([LABELS[top_op]]) if top_op in LABELS else None
+    z_top = float((topw @ sup_s).max()) if topw is not None else z_l1
+    z_top = min(max(z_top, z_s1 + 1.0), z_l1)             # keep within S1..L1, monotone
+    zs = np.array([z_s1, z_top, z_l1, max(z_tt, z_l1 + 1.0)], dtype=float)
+    ang = sgn * np.deg2rad(np.array([0.0, delta_ll, delta_ll, delta_ll - delta_tk], dtype=float))
 
     # global pelvic anteversion about the femoral-head axis (sign reduces PT)
     F_hip, a_pelvis = None, 0.0

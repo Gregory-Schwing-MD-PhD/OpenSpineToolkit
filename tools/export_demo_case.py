@@ -410,8 +410,8 @@ def process(args):
         demo_seg = np.asanyarray(demo.dataobj).astype(np.int32)
         level, tech = args.postop_level, args.postop_technique
 
-        # Biomechanically-grounded PLAN: Lafage age-adjusted targets set how much lordosis
-        # to add (won't over-flatten an older spine), with a reciprocal thoracic estimate.
+        # Biomechanically-grounded PLAN: Lafage age-adjusted ΔLL (won't over-flatten an
+        # older spine) + reciprocal thoracic estimate.
         plan = surgery.plan_realignment(base, args.postop_age,
                                         reciprocal_k=args.postop_reciprocal_k)
         if args.postop_delta > 0:                         # manual ΔLL override
@@ -419,16 +419,31 @@ def process(args):
             plan["delta_tk"] = round(args.postop_reciprocal_k * args.postop_delta, 2)
         d_ll, d_tk, antev = plan["delta_ll"], plan["delta_tk"], plan["pelvic_antevert"]
 
-        # World-space bend params, derived ONCE on the fast/accurate coarse demo seg. NO
-        # global pelvic rotation in the IMAGE (supine pelvis stays put, so overlay == image);
-        # the pelvic compensation is reported analytically below as a standing prediction.
+        # Operate the FEWEST levels that deliver ΔLL at the technique's per-level lordosis
+        # capacity (Greenberg Table 73.2), lowest discs first (ALIF best at L5–S1) — so the
+        # construct matches the recommendation instead of over-fusing every lumbar level.
+        CAP = {"alif": 6.0, "interbody": 6.0, "acr": 12.0, "llif": 1.0, "tlif": 2.0,
+               "spo": 10.0, "pso": 35.0}
+        chain = ["L1", "L2", "L3", "L4", "L5", "L6", "S1"]
+        present = set(int(v) for v in np.unique(seg_fr)) - {0}
+        seg_names = [n for n in chain if surgery.LABELS.get(n) in present]
+        all_discs = list(zip(seg_names, seg_names[1:]))   # cranial→caudal
+        cap = CAP.get(tech.lower(), 6.0)
+        n_lev = max(1, min(len(all_discs), int(np.ceil(d_ll / cap - 1e-6)))) if all_discs else 0
+        op_discs = all_discs[-n_lev:] if n_lev else []     # lowest n discs
+        top_op = op_discs[0][0] if op_discs else "L1"      # top operated vertebra
+        level_span = f"{op_discs[0][0]}–{op_discs[-1][1]}" if op_discs else level
+
+        # World-space bend params on the fast/accurate coarse demo seg; lordosis CONCENTRATED
+        # over the operated segment (S1→top_op). NO global pelvic rotation in the supine IMAGE
+        # (overlay == image); the pelvic compensation is reported analytically below.
         params = surgery.bend_params(demo_seg, A_demo, delta_ll=d_ll, delta_tk=d_tk,
-                                     pelvic_antevert=0.0)
+                                     pelvic_antevert=0.0, top_op=top_op)
         if params is None:
             raise SystemExit("bend_params failed (missing L1/S1/lumbar in demo seg)")
 
-        # IMAGE: lumbar lordosis + RECIPROCAL thoracic kyphosis (unfused thorax flexes, not
-        # carried rigidly), full-res warped onto the demo grid — fast (params precomputed).
+        # IMAGE: lumbar lordosis (at the operated levels) + RECIPROCAL thoracic kyphosis,
+        # full-res warped onto the demo grid — fast (params precomputed).
         postop_seg = surgery.synthesize_postop(seg_fr, laff, params=params, order=0,
                                                out_affine=A_demo, out_shape=demo_shape)
         postop_ct = surgery.synthesize_postop(ct_fr, laff, params=params, order=1,
@@ -454,6 +469,11 @@ def process(args):
             comp = surgery.predict_compensated_alignment(
                 base["PI"], base["PT"], target_pt=plan["targets"].get("PT", 20.0))
             psum["PT_compensated"], psum["SS_compensated"] = comp["PT"], comp["SS"]
+        # The post-op view shows the RESULT + the plan banner, not a fresh "lordosis to
+        # restore" workup (that lives on the pre-op view) — so drop the pre-op Schwab/surgery
+        # carried in `base` (they'd otherwise read as "still needs N° of correction").
+        psum.pop("schwab", None)
+        psum.pop("surgery", None)
 
         # OVERLAY — carry the CLEAN pre-op construction forward by the SAME bend (no re-fit
         # of the rough image): pelvic constructions are unmoved (θ=0), the LL construction
@@ -466,16 +486,12 @@ def process(args):
         else:
             pgeom = build_geometry(postop_seg, A_demo, endplate_rule=args.endplate_rule)
 
-        # Surgical hardware: an interbody CAGE in each operated disc (ALIF/LLIF — NO
-        # vertebral body is resected; that is PSO only).
-        chain = ["L1", "L2", "L3", "L4", "L5", "L6", "S1"]
-        present = set(int(v) for v in np.unique(seg_fr)) - {0}
-        seg_names = [n for n in chain if surgery.LABELS.get(n) in present]
-        disc_pairs = list(zip(seg_names, seg_names[1:]))
-        if tech.lower() in ("alif", "llif", "tlif", "interbody", "acr") and disc_pairs:
+        # Surgical hardware: a clean interbody CAGE at each OPERATED disc — rendered as a
+        # bright metal implant on the CT (cage_id=None → CT-only, like a real radiodense
+        # cage), NOT a colored label. NO vertebral body is resected (that is PSO only).
+        if tech.lower() in ("alif", "llif", "tlif", "interbody", "acr") and op_discs:
             postop_seg, postop_ct = surgery.place_interbody_cages(
-                postop_seg, postop_ct, A_demo, disc_pairs)
-        level_span = f"{seg_names[0]}–{seg_names[-1]}" if seg_names else level
+                postop_seg, postop_ct, A_demo, op_discs, cage_id=None, cage_hu=1500.0)
 
         nib.save(nib.Nifti1Image(postop_seg.astype(np.int16), A_demo),
                  os.path.join(cdir, "postop_seg.nii.gz"))
@@ -486,7 +502,7 @@ def process(args):
         meta["postop"] = {"summary": psum, "geometry": pgeom, "preop_summary": base,
                           "files": {"ct": "postop_ct.nii.gz", "seg": "postop_seg.nii.gz"},
                           "plan": {"level": level, "level_span": level_span, "technique": tech,
-                                   "cage_levels": len(disc_pairs), "body_resected": False,
+                                   "cage_levels": len(op_discs), "body_resected": False,
                                    "delta_deg": round(float(d_ll), 1),
                                    "reciprocal_tk_deg": d_tk, "pelvic_antevert_deg": antev,
                                    "age": args.postop_age, "targets": plan["targets"]}}
