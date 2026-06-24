@@ -28,6 +28,6 @@ end/apex vertebrae and report Cobb + convex side.
 
 ## Your code goes here
 Add your code to this folder, then fill in:
-- **What it does:**
-- **How to run** (dependencies + command):
-- **Author / team:**
+- **What it does:** Computes the coronal Cobb angle (scoliosis) from CTSpinoPelvic1K v3 masks, using the toolbox's tested fit_endplate primitive and a femoral-head-derived patient coronal axis. Auto-detects the most-tilted vertebral pair (clinical default: L1-S1) and reports the angle, end levels, and per-level fit residuals.
+- **How to run** (dependencies + command): `python main.py --labels /path/to/labels --out cobb.csv` (equivalent to `python -m ostk cobb --labels ... --out ...`)
+- **Author / team:** Ashley Schehr

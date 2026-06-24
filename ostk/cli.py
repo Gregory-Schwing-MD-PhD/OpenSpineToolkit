@@ -1,8 +1,9 @@
 """ostk.cli — run spinopelvic measurements over a CTSpinoPelvic1K labels folder.
 
-    python -m ostk pi  --labels labels/ --out pi.csv
-    python -m ostk ll  --labels labels/ --out ll.jsonl
-    python -m ostk all --labels labels/ --out summary.csv --workers 8
+    python -m ostk pi   --labels labels/ --out pi.csv
+    python -m ostk ll   --labels labels/ --out ll.jsonl
+    python -m ostk cobb --labels labels/ --out cobb.csv
+    python -m ostk all  --labels labels/ --out summary.csv --workers 8
 
 `--labels` is a directory of NIfTI label maps (the dataset's `labels/`); the
 case id is the leading token of each filename (`0001_seg.nii.gz` -> `0001`).
@@ -62,6 +63,13 @@ def _run_ll(path: str) -> dict:
     return metrics.lumbar_lordosis_from_label(lab, aff, case_id=_case_id(path)).to_dict()
 
 
+def _run_cobb(path: str) -> dict:
+    from .io import load_label
+    from . import cobb
+    lab, aff = load_label(path)
+    return cobb.coronal_cobb_from_label(lab, aff, case_id=_case_id(path)).to_dict()
+
+
 def _run_all(path: str) -> dict:
     from .io import load_label
     from . import metrics
@@ -69,14 +77,14 @@ def _run_all(path: str) -> dict:
     return metrics.spinopelvic_summary_from_label(lab, aff, case_id=_case_id(path))
 
 
-_WORKERS = {"pi": _run_pi, "ll": _run_ll, "all": _run_all}
+_WORKERS = {"pi": _run_pi, "ll": _run_ll, "cobb": _run_cobb, "all": _run_all}
 
 
 # --- flattening for CSV -----------------------------------------------------
 
 def _flatten(rec: dict, cmd: str) -> dict:
     """One flat row per case for the aggregate CSV (full detail stays in JSONL)."""
-    if cmd in ("pi", "ll"):
+    if cmd in ("pi", "ll", "cobb"):
         return {
             "case_id": rec.get("case_id"),
             "parameter": rec.get("parameter"),
