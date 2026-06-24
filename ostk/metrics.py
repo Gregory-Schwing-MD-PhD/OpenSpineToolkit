@@ -455,6 +455,41 @@ def surgical_recommendation(pi: float, ll: float, pt: float) -> Dict:
     }
 
 
+def _infer_mode(data) -> str:
+    """Auto-detect '2d' vs '3d' from the input: a landmark dict or a 2-D array → 2d, a
+    3-D label volume → 3d."""
+    if isinstance(data, dict):
+        return "2d"
+    arr = np.asarray(data)
+    if arr.ndim == 2:
+        return "2d"
+    if arr.ndim == 3:
+        return "3d"
+    raise ValueError(f"cannot infer 2d/3d from data with ndim={arr.ndim}")
+
+
+def spinopelvic_summary(data, affine=None, *, mode: str = None, femoral=None,
+                        sup=(0.0, 1.0), case_id: str = "", sup_axis=WORLD_SUPERIOR) -> Dict:
+    """Dimension-aware entry point. Routes a 3-D label volume (+ affine) to the 3-D pipeline,
+    or a 2-D radiograph — a label mask OR a per-level endplate-line dict (+ optional femoral
+    point) — to the 2-D pipeline (ostk.metrics2d). `mode` ('2d'/'3d') forces a backend for
+    testing/override; None auto-detects. Both backends return the same summary schema.
+
+    NOTE: the PACS demo calls `spinopelvic_summary_from_label` directly — this router is for
+    the CT/radiograph dual-modality path, not the demo."""
+    from . import metrics2d
+    m = (mode or _infer_mode(data)).lower()
+    if m == "2d":
+        if isinstance(data, dict):
+            return metrics2d.spinopelvic_summary_2d(data, femoral, sup=sup, case_id=case_id)
+        return metrics2d.spinopelvic_summary_from_mask_2d(data, sup=sup, case_id=case_id)
+    if m == "3d":
+        if affine is None:
+            raise ValueError("3-D mode requires an affine")
+        return spinopelvic_summary_from_label(data, affine, case_id=case_id, sup_axis=sup_axis)
+    raise ValueError(f"unknown mode {mode!r} (use '2d', '3d', or None)")
+
+
 def spinopelvic_summary_from_label(label, affine, *, case_id: str = "",
                                    sup_axis=WORLD_SUPERIOR,
                                    endplate_frac: float = 0.15,
