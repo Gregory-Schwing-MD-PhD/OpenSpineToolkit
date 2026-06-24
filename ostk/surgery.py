@@ -475,13 +475,17 @@ def place_interbody_cages(label, ct, affine, disc_pairs, *, cage_id=CAGE_ID,
             apx = -apx
         depth = float((wu @ apx).max() - (wu @ apx).min())
         wide = float((wu @ lrx).max() - (wu @ lrx).min())
-        apw, ww = min(ap_mm, 0.72 * depth), min(width_mm, 0.85 * wide)
-        center = center + apx * (anterior_frac * depth)    # seat slightly anterior
+        apw, ww = min(ap_mm, 0.55 * depth), min(width_mm, 0.85 * wide)
+        # seat at the ANTERIOR border: cage's anterior face ~3 mm behind the anterior cortex
+        # of the upper body (ALIF cages sit anteriorly, not centrally/posteriorly).
+        ant_face = float((wu @ apx).max())
+        center = center + apx * ((ant_face - apw / 2 - 3.0) - center @ apx)
         d = world - center.astype(np.float32)
         ul, ua, uh = d @ lrx, d @ apx, d @ hgt
         t = np.clip((ua + apw / 2) / apw, 0.0, 1.0)        # 0 posterior → 1 anterior
         hh = 0.5 * (h_post_mm + (h_ant_mm - h_post_mm) * t)   # wedge: taller anteriorly
         box = (np.abs(ul) <= ww / 2) & (np.abs(ua) <= apw / 2) & (np.abs(uh) <= hh)
+        box &= (lab.reshape(-1) == 0)                      # disc gap ONLY — no body overlap
         if cage_id is not None:                            # label it (else CT-only implant)
             lab.reshape(-1)[box] = cage_id
         im.reshape(-1)[box] = cage_hu                      # bright metal HU on the CT
