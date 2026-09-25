@@ -453,8 +453,8 @@ def endplate_corners_body(mask, affine, which: str = "superior", *,
             lr_med = core.mean(axis=0)
             lr_med = lr_med - (lr_med @ ap) * ap - (lr_med @ a_ax) * a_ax
             xa, xb = float(xs.min()), float(xs.max())
-            za = float(np.vander([xa], profile_degree + 1) @ pc)
-            zb = float(np.vander([xb], profile_degree + 1) @ pc)
+            za = float((np.vander([xa], profile_degree + 1) @ pc)[0])
+            zb = float((np.vander([xb], profile_degree + 1) @ pc)[0])
             pa = lr_med + xa * ap + za * a_ax
             pb = lr_med + xb * ap + zb * a_ax
             u_prof = pb - pa
@@ -830,7 +830,7 @@ def endplate_chord_from_profile(surf, ap, sup_axis, x_ant, x_post, *, degree: in
     rms = float(np.sqrt(np.mean(resid ** 2)))
     # in-plane component perpendicular to both ap and the plate's L-R spread
     def _pt(xv):
-        zv = float(np.vander([float(xv)], degree + 1) @ coef)
+        zv = float((np.vander([float(xv)], degree + 1) @ coef)[0])
         # rebuild in world: keep the surface's median L-R, move along ap and sup
         lr_med = S.mean(axis=0) - (S.mean(axis=0) @ apv) * apv - (S.mean(axis=0) @ a_ax) * a_ax
         return lr_med + float(xv) * apv + zv * a_ax
